@@ -1,0 +1,25 @@
+# Add ONE of these under mcp_servers: in ~/.hermes/config.yaml, then restart Hermes.
+# Tools show up as mcp_freepbx_<tool>, e.g. mcp_freepbx_list_active_calls.
+
+mcp_servers:
+  # A) Hermes runs on the FreePBX server itself.
+  freepbx:
+    command: "/opt/freepbx-mcp/venv/bin/freepbx-mcp"
+    args: []
+    # The AMI secret is read from /etc/freepbx-mcp.env on the PBX.
+    timeout: 90
+    connect_timeout: 30
+    # untrusted = Hermes asks you before every call or hangup; the
+    # monitoring tools are marked read-only and run without asking.
+    # Switch to "full" once you trust it to place calls on its own.
+    trust: untrusted
+
+  # B) Hermes runs on another machine: launch the server over SSH, so no
+  #    new port is opened and the AMI secret never leaves the PBX.
+  #    Set up key-based SSH for the user first (ssh-copy-id hermes@PBX_IP).
+  # freepbx:
+  #   command: "ssh"
+  #   args: ["-T", "-o", "BatchMode=yes", "hermes@PBX_IP", "/opt/freepbx-mcp/venv/bin/freepbx-mcp"]
+  #   timeout: 90
+  #   connect_timeout: 30
+  #   trust: untrusted

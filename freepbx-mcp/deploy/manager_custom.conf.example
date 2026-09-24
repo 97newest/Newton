@@ -1,0 +1,18 @@
+; AMI user for the FreePBX MCP server. Append to /etc/asterisk/manager_custom.conf
+; (FreePBX includes that file and never overwrites it), then run:
+;   asterisk -rx "manager reload"
+;
+; install.sh does this for you with a random secret.
+
+[hermes]
+secret = CHANGE_ME_TO_A_LONG_RANDOM_SECRET
+; Only accept connections from this machine. If the MCP server runs on
+; another host, add its address here, e.g. permit = 192.168.1.50/255.255.255.255
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.255
+; read: the events recent_events keeps (calls, registrations, failed logins).
+read = system,call,reporting,security,agent
+; write: reporting = the *Show* list actions, command = CLI output,
+; originate = placing calls, call = hangup. No "system" or "config".
+write = call,reporting,originate,command,agent
+writetimeout = 5000
