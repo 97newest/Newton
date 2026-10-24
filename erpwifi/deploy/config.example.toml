@@ -1,64 +1,71 @@
-# erpwifi configuration. Copy to config.toml (on the router: usb1/erpwifi/config.toml)
-# and fill in the values marked CHANGE.
+# erpwifi configuration for core-01 ("0. Firewall", RB5009).
+# Copy to config.toml, fill in every value marked CHANGE, and upload it to the
+# router's erpwifi/data/ folder (Winbox > Files, drag and drop).
+
+[site]
+timezone = "Africa/Nairobi"   # "today" for daily allowances
 
 [radius]
 listen = "0.0.0.0"
 auth_port = 1812
 acct_port = 1813
-# How often the router sends usage updates (seconds). Must match
-# radius-interim-update on the hotspot profile.
 interim_interval = 300
+# Hotspot user profile on the router that signed-in users are placed in
+# (created by routeros/core01-2-hotspot.rsc).
+router_user_profile = "erpwifi"
 
-# The router, as seen from this server. When erpwifi runs as a container on the
-# RB5009 this is the router's address on the container bridge.
+# The router as seen from the container (its address on the container bridge).
 [[radius.clients]]
 address = "172.31.250.1"
-secret = "CHANGE-to-a-long-random-string"   # same as /radius secret on the router
+secret = "CHANGE-same-as-radiusSecret-in-core01-2-hotspot.rsc"
 name = "0. Firewall"
-coa_port = 3799                               # /radius incoming port, used for "Kick"
+coa_port = 3799
 
 [erpnext]
-url = "https://erp.example.com"   # CHANGE
-# API key/secret of an ERPNext user allowed to read User and Employee
-# (User > API Access > Generate Keys). Needed for role/department rules.
+url = "https://CHANGE.example.com"
+# ERPNext > User > API Access > Generate Keys, on a user that can read
+# User and Employee (a dedicated "wifi-integration" user is best).
 api_key = "CHANGE"
 api_secret = "CHANGE"
 timeout = 8
 verify_tls = true
-# Only users with one of these roles may use the WiFi. [] = any enabled user.
 require_roles = ["Employee"]
+# If ERPNext is unreachable, people who signed in with the same password in
+# the last 12 hours can still get on. Set 0 to refuse everyone (fail closed).
+offline_grace_hours = 12
 
 [policy]
 default_profile = "staff"
 
-# Limit profiles. rate_limit is MikroTik format "upload/download" for the
-# client, e.g. "5M/20M". 0 or "" means unlimited.
+# Speed is left to the router's existing mangle/PCQ setup (10 Mbps per IP via
+# Std-Pkt). A profile's address_list puts the signed-in device into one of the
+# existing lists for a different tier: Express (full speed), Restrict-Conn
+# (5M), Slow-Conn (512k). rate_limit would create a separate hotspot queue
+# that bypasses that tree, so it is left empty here on purpose.
 [profiles.staff]
-rate_limit = "10M/30M"
-session_timeout = 43200    # seconds per session
-idle_timeout = 900
-daily_data_mb = 5120
+session_timeout = 43200       # 12 h, then sign in again
+idle_timeout = 1800
 max_devices = 3
 
 [profiles.management]
-rate_limit = "50M/100M"
+address_list = "Express"
 max_devices = 5
 
 [profiles.restricted]
-rate_limit = "2M/5M"
-session_timeout = 7200
-daily_data_mb = 1024
-daily_time_min = 240
+address_list = "Restrict-Conn"
+session_timeout = 28800
+daily_data_mb = 2048
 max_devices = 1
 
+# Vouchers: internet only. core01-2-hotspot.rsc drops HS-GUEST -> internal networks.
 [profiles.guest]
-rate_limit = "2M/10M"
+address_list = "HS-GUEST"
 session_timeout = 14400
-idle_timeout = 600
+idle_timeout = 900
+daily_data_mb = 1024
 max_devices = 1
 
-# First matching rule wins; anyone else gets policy.default_profile.
-# department matches ERPNext departments with or without the " - COMPANY" suffix.
+# First match wins; everyone else gets policy.default_profile.
 [[rules]]
 role = "System Manager"
 profile = "management"
@@ -67,27 +74,21 @@ profile = "management"
 department = "Management"
 profile = "management"
 
-[[rules]]
-department = "Production"
-profile = "restricted"
-
-# [[rules]]
-# user = "someone@example.com"
-# profile = "management"
-
 [vouchers]
 default_profile = "guest"
-default_minutes = 1440     # validity after first use
+default_minutes = 1440
 code_length = 8
 
 [dashboard]
 listen = "0.0.0.0"
 port = 8080
 admin_username = "admin"
-# Generate with: erpwifi hash-password
+# Generate with: docker run --rm -it ghcr.io/97newest/erpwifi erpwifi hash-password
 admin_password_hash = ""
-# Random string; keeps admins signed in across restarts.
 secret_key = "CHANGE-to-a-long-random-string"
+# Who may open the dashboard (the router firewall also limits this to the
+# WIFI-ADMINS address list).
+allowed_networks = ["192.168.6.0/24", "192.168.80.0/24"]
 
 [database]
 path = "/data/erpwifi.db"

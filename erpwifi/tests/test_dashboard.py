@@ -120,3 +120,31 @@ def test_config_validation():
         parse_config({**base, "rules": [{"role": "Employee", "profile": "default"}]})
     with pytest.raises(ConfigError, match="unknown keys"):
         parse_config({**base, "profiles": {"default": {"speed": 1}, "guest": {}}})
+
+
+def test_hotspot_pages_served_for_router_fetch(client):
+    r = client.get("/hotspot/login.html")
+    assert r.status_code == 200 and "$(link-login-only)" in r.get_data(as_text=True)
+    assert client.get("/hotspot/../config.py").status_code == 404
+    assert client.get("/hotspot/secret.txt").status_code == 404
+
+
+def test_allowed_networks(stack):
+    stack.config.dashboard.allowed_networks = ["192.168.6.0/24"]
+    app = create_app(stack.config, stack.db)
+    c = app.test_client()
+    assert c.get("/login", environ_base={"REMOTE_ADDR": "192.168.81.50"}).status_code == 403
+    assert c.get("/login", environ_base={"REMOTE_ADDR": "192.168.6.20"}).status_code == 200
+    # the router fetches portal pages from the container bridge
+    assert c.get("/hotspot/login.html", environ_base={"REMOTE_ADDR": "172.31.250.1"}).status_code == 200
+    assert c.get("/healthz", environ_base={"REMOTE_ADDR": "10.0.0.1"}).status_code == 200
+
+
+def test_example_config_is_valid():
+    import tomllib
+    from pathlib import Path
+    path = Path(__file__).parent.parent / "deploy" / "config.example.toml"
+    config = parse_config(tomllib.loads(path.read_text()))
+    assert config.radius.clients[0].address == "172.31.250.1"
+    assert config.timezone == "Africa/Nairobi"
+    assert all(not p.rate_limit for p in config.profiles.values())

@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import secrets
 import time
 from functools import wraps
+from pathlib import Path
 
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import (Flask, abort, flash, redirect, render_template, request, send_from_directory,
+                   session, url_for)
 from werkzeug.security import check_password_hash
 
 from .config import Config
 from .db import Database, start_of_day
 from .radius import disconnect, load_dictionary
+
+HOTSPOT_DIR = Path(__file__).parent / "hotspot"
+HOTSPOT_FILES = {p.name for p in HOTSPOT_DIR.glob("*.html")}
 
 
 def _fmt_bytes(n) -> str:
@@ -54,6 +60,19 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
             session["csrf"] = secrets.token_urlsafe(24)
         return {"csrf": session["csrf"], "now": time.time()}
 
+    allowed = [ipaddress.ip_network(n, strict=False) for n in config.dashboard.allowed_networks]
+
+    @app.before_request
+    def check_source():
+        if not allowed or request.endpoint in ("healthz", "hotspot_file"):
+            return
+        try:
+            addr = ipaddress.ip_address(request.remote_addr or "")
+        except ValueError:
+            abort(403)
+        if not any(addr in net for net in allowed):
+            abort(403)
+
     @app.before_request
     def check_csrf():
         if request.method == "POST":
@@ -72,6 +91,13 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    # Captive-portal pages, so the router can download them with /tool fetch.
+    @app.get("/hotspot/<name>")
+    def hotspot_file(name):
+        if name not in HOTSPOT_FILES:
+            abort(404)
+        return send_from_directory(HOTSPOT_DIR, name, mimetype="text/html")
 
     @app.route("/login", methods=["GET", "POST"])
     def login():

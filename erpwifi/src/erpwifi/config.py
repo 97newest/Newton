@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,9 @@ class RadiusConfig:
     auth_port: int = 1812
     acct_port: int = 1813
     interim_interval: int = 300
+    # RouterOS hotspot user profile to put RADIUS users in (sent as
+    # Mikrotik-Group). Empty leaves them in the "default" user profile.
+    router_user_profile: str = ""
     clients: list[RadiusClient] = field(default_factory=list)
 
 
@@ -38,6 +42,9 @@ class ERPNextConfig:
     # Only users holding at least one of these roles may sign in; empty allows
     # every enabled ERPNext user.
     require_roles: list[str] = field(default_factory=list)
+    # When ERPNext can't be reached, let people back in if they signed in with
+    # the same password within this many hours. 0 refuses everyone (fail closed).
+    offline_grace_hours: float = 0
 
     @property
     def has_api_token(self) -> bool:
@@ -84,6 +91,9 @@ class DashboardConfig:
     admin_username: str = "admin"
     admin_password_hash: str = ""
     secret_key: str = ""
+    # Networks allowed to open the dashboard, e.g. ["192.168.6.0/24"]. Empty
+    # allows any address that can reach the port.
+    allowed_networks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -96,6 +106,8 @@ class Config:
     vouchers: VoucherConfig
     dashboard: DashboardConfig
     database: str
+    # IANA zone used for "today" in daily allowances, e.g. "Africa/Nairobi".
+    timezone: str = ""
 
     def client_for(self, address: str) -> RadiusClient | None:
         for client in self.radius.clients:
@@ -140,6 +152,11 @@ def parse_config(data: dict) -> Config:
     default_profile = policy.get("default_profile", "default")
     vouchers = _build(VoucherConfig, data.get("vouchers", {}), "vouchers")
     dashboard = _build(DashboardConfig, data.get("dashboard", {}), "dashboard")
+    for net in dashboard.allowed_networks:
+        try:
+            ipaddress.ip_network(net, strict=False)
+        except ValueError as exc:
+            raise ConfigError(f"[dashboard] allowed_networks: {exc}") from exc
 
     for ref, where in [(default_profile, "policy.default_profile"),
                        (vouchers.default_profile, "vouchers.default_profile"),
@@ -163,6 +180,7 @@ def parse_config(data: dict) -> Config:
         vouchers=vouchers,
         dashboard=dashboard,
         database=data.get("database", {}).get("path", "erpwifi.db"),
+        timezone=data.get("site", {}).get("timezone", ""),
     )
 
 

@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 from werkzeug.security import generate_password_hash
 
@@ -31,6 +32,9 @@ def cmd_run(args):
     from .radius import RadiusServer
 
     config = _load(args)
+    if config.timezone:
+        os.environ["TZ"] = config.timezone
+        time.tzset()
     db = Database(config.database, stale_after=config.radius.interim_interval * 3 + 60)
     radius = RadiusServer(config, db, Policy(config, db, ERPNextClient(config.erpnext)))
     threading.Thread(target=radius.serve_forever, name="radius", daemon=True).start()

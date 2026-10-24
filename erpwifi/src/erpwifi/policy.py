@@ -7,6 +7,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from .config import Config, Profile
 from .db import Database, normalize_mac, start_of_day
 from .erpnext import ERPNextClient, ERPNextUnavailable, ERPUser
@@ -72,18 +74,44 @@ class Policy:
             user = self.erp.authenticate(username, password)
         except ERPNextUnavailable as exc:
             log.warning("ERPNext unavailable for %s: %s", username, exc)
-            return Decision(False, "Sign-in service unavailable, try again shortly")
+            return self._offline(username, password, mac)
         if user is None:
+            self.db.forget_credential(username)
             return Decision(False, "Invalid username or password")
         user_id = user.user_id.lower()
         if not user.enabled:
+            self.db.forget_credential(username)
             return Decision(False, "Your ERP account is disabled", username=user_id)
         required = self.config.erpnext.require_roles
         if required and not set(required) & set(user.roles):
+            self.db.forget_credential(username)
             return Decision(False, "Your ERP account is not allowed to use WiFi", username=user_id)
         if self.db.is_blocked(user_id, mac):
             return Decision(False, "This account or device is blocked", username=user_id)
-        return self._limits(user_id, "erp", self.profile_for(user), mac)
+        profile = self.profile_for(user)
+        if self.config.erpnext.offline_grace_hours:
+            self.db.remember_credential(username, user_id, profile.name,
+                                        generate_password_hash(password))
+        return self._limits(user_id, "erp", profile, mac)
+
+    def _offline(self, username: str, password: str, mac: str) -> Decision:
+        """ERPNext is unreachable: accept a recent, identical sign-in if allowed."""
+        unavailable = Decision(False, "Sign-in service unavailable, try again shortly")
+        grace = self.config.erpnext.offline_grace_hours
+        cached = self.db.cached_credential(username) if grace else None
+        if cached is None or time.time() - cached["verified_at"] > grace * 3600:
+            return unavailable
+        if not check_password_hash(cached["password_hash"], password):
+            return unavailable
+        user_id = cached["user_id"]
+        if self.db.is_blocked(user_id, mac):
+            return Decision(False, "This account or device is blocked", username=user_id)
+        profile = self.config.profiles.get(cached["profile"],
+                                           self.config.profiles[self.config.default_profile])
+        decision = self._limits(user_id, "erp", profile, mac)
+        if decision.accept:
+            decision.message = "Welcome (offline: ERPNext unreachable)"
+        return decision
 
     def _voucher(self, voucher, password: str, mac: str) -> Decision:
         code = voucher.code
@@ -151,6 +179,8 @@ class Policy:
             attrs["Session_Timeout"] = max(1, int(min(timeouts)))
         if profile.idle_timeout:
             attrs["Idle_Timeout"] = profile.idle_timeout
+        if self.config.radius.router_user_profile:
+            attrs["Mikrotik_Group"] = self.config.radius.router_user_profile
         if profile.rate_limit:
             attrs["Mikrotik_Rate_Limit"] = profile.rate_limit
         if profile.address_list:

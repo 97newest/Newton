@@ -1,94 +1,113 @@
-# erpwifi: WiFi sign-in with ERPNext accounts on a MikroTik hotspot
+# erpwifi: ERPNext sign-in for the Trident network on core-01
 
-Staff connect to the WiFi, get the router's captive portal, and sign in with
-their **ERPNext** username/email and password. Guests use a **voucher code**.
-Each person gets speed, time, data and device limits based on their ERPNext
-role or department. An **admin dashboard** shows who is online and lets you
-kick or block users and devices, create and print vouchers, see usage and read
-the sign-in log.
+Everyone who connects to **WiFi (vlan81, 192.168.81.0/24)** or **wired LAN
+(bridge1, 192.168.80.0/24)** must sign in with their **ERPNext** account
+before they get internet or internal access. Guests use **voucher codes**,
+which give internet only. Limits come from the person's ERPNext role or
+department. The admin dashboard shows who is online and lets you kick or block
+users and devices, create and print vouchers, see usage, and read the sign-in
+log.
 
-Built for a MikroTik RB5009 on RouterOS 7.20, where it runs as a container on
-the router itself. It also runs on any Linux box or VM next to the router.
+The service runs as a container **on the router** (core-01, RB5009, RouterOS
+7.20.5). The subnets, DHCP, APs and VLANs stay as they are.
 
 ```
- phone ──WiFi──▶ RB5009 hotspot (captive portal: hotspot/login.html)
-                    │  RADIUS auth + accounting (UDP 1812/1813)
-                    ▼
-               erpwifi container 172.31.250.2 ──HTTPS──▶ ERPNext /api/method/login
-                    │  Disconnect-Request (UDP 3799) for "Kick"      + User/Employee lookup
-                    └─ dashboard :8080 (admin LAN only), SQLite in /data
+ WiFi 192.168.81.x (vlan81) ┐                          ┌─▶ ERPNext  /api/method/login
+ wired 192.168.80.x (bridge1)┴▶ core-01 hotspot ──RADIUS─▶ erpwifi container 172.31.250.2
+                                (sign-in page)  ◀─Disconnect (Kick)─┘  dashboard :8080 (WIFI-ADMINS)
+ cameras .30, PBX .50, switches/APs .6 ──▶ bypassed by MAC (from the static ARP list)
 ```
 
-## How it works
+## How it fits the current setup
 
-* **Sign-in.** The hotspot sends the username and password to erpwifi over
-  RADIUS (PAP). erpwifi checks them with ERPNext's normal login endpoint, then
-  logs that ERPNext session out again. With an API key it also reads the
-  user's roles and their Employee record's department and status. Disabled
-  users and employees whose status is not *Active* are refused.
-* **Limits.** `[[rules]]` map a role, department or specific user to a
-  `[profiles.*]` entry. The first match wins, and everyone else gets
-  `policy.default_profile`. A profile sets:
-  * `rate_limit` (sent to the router as `Mikrotik-Rate-Limit`)
-  * `session_timeout` and `idle_timeout`
-  * `daily_data_mb`: the remaining allowance is sent as `Mikrotik-Total-Limit`
-  * `daily_time_min`
-  * `max_devices`: how many devices can be online at once
+| Existing setup | What erpwifi does |
+|---|---|
+| Static-ARP MAC whitelist (`arp=reply-only`, `add-arp` off) | Left in place. A device still needs its static ARP entry **and** a sign-in. For vlan81, `openWifiArp="yes"` makes the sign-in the only gate, which voucher guests with new phones need. bridge1 is never changed. |
+| bridge1 also carries .6 / .30 / .50 | Every static-ARP device in those subnets gets a hotspot `ip-binding type=bypassed`, so cameras, phones, switches and APs never see a sign-in page. Admin PCs and printers on .80 go in `bypassMacs`. |
+| Mangle + PCQ shaping (Std-Pkt 10 Mbps/IP; Express, Restrict-Conn, Slow-Conn lists) | Stays in charge of speed. Profiles don't send a rate limit. To move a person to another tier, a profile adds their IP to an existing list (`address_list = "Express"`) while they are signed in. The hotspot's per-user dynamic queues are placed at the **bottom** (`insert-queue-before=bottom`), so they don't capture traffic ahead of the Parent tree. |
+| `LAN` address list grants internal access | Signed-in staff get the same access as today. Voucher guests are put in `HS-GUEST`, and a forward rule drops `HS-GUEST → LAN`. |
+| www (80) disabled, no trusted certificate | The hotspot uses its own login server, which doesn't need `/ip service www`. Sign-in is HTTP with PAP (see Security). |
+| SSH to the router hijacked by dst-nat | Nothing needs SSH. You paste scripts in Winbox/Terminal, upload files in Winbox Files, and the router downloads the portal pages itself with `/tool fetch`. |
+| Router log is short-lived | The dashboard's sign-in log (SQLite on the router) is the audit trail. |
 
-  Daily usage comes from RADIUS accounting.
-* **Vouchers.** These are 8-character codes such as `K7MQ2XRP`. A voucher's
-  validity starts on first use. Each voucher has its own device count and an
-  optional data cap, and you can revoke it at any time.
-* **Dashboard.** Kick, block and revoke send an RFC 5176 Disconnect-Request to
-  the router, so the person is dropped at once.
+## When something is down
 
-## Setup on the RB5009
+* **Container down:** nobody new can sign in. People already online stay
+  online. The `wifi-breakglass` local hotspot user (set `breakGlassPassword`)
+  is checked by the router itself, so it still works. Admin PCs in
+  `bypassMacs` never need to sign in. Winbox by MAC works from bridge1
+  whatever happens.
+* **ERPNext unreachable:** with `offline_grace_hours = 12`, anyone who signed
+  in successfully in the last 12 hours with the same password gets back in,
+  with their last profile. Blocks still apply. Set it to 0 to refuse everyone
+  instead (fail closed).
+* **Undo everything:** run `core01-2-hotspot-rollback.rsc`. The network goes
+  straight back to how it is today. `core01-1-container-rollback.rsc` then
+  removes the container.
 
-1. **Build the image** for arm64 on any machine with Docker:
-   ```sh
-   docker buildx build --platform linux/arm64 -t erpwifi:arm64 \
-     --output type=docker,dest=erpwifi-arm64.tar .
+## Install
+
+Before anyone signs in, wired PCs, printers and admin machines need to be in
+`bypassMacs`. Otherwise those users will see a sign-in page on every new
+session.
+
+1. **Preflight.** This changes nothing. Paste `routeros/core01-0-preflight.rsc`
+   and keep the output. It lists:
+   * the device mode and the container package
+   * the fasttrack rules
+   * the speed-tier lists
+   * how many devices will be bypassed
+   * the wired .80 devices you can pick for `bypassMacs`
+2. **Image.** The `erpwifi image` GitHub workflow builds arm64 and amd64
+   images and pushes them to `ghcr.io/97newest/erpwifi:latest` from `main`.
+   Make the package public in GitHub (Packages → erpwifi → settings), or give
+   the router registry credentials.
+3. **One-time router preparation.** Someone has to be at the router, and it
+   causes a short outage, so do it after hours:
    ```
-2. **Write the config.** Start from `deploy/config.example.toml`:
-   * Set `erpnext.url`.
-   * In ERPNext, open *User → API Access → Generate Keys* on a user that can
-     read User and Employee, and paste the key and secret into `api_key` and
-     `api_secret`.
-   * Set the RADIUS secret, your profiles and your rules.
-   * Run `erpwifi hash-password` and paste the result into
-     `admin_password_hash`.
-   * Check the file with `erpwifi -c config.toml check-config`, and test a
-     real account with `erpwifi -c config.toml check-erp jane@yourco.com`.
-3. **Prepare the router.**
-   * Install the `container` package.
-   * Run `/system/device-mode/update container=yes` and confirm by pressing
-     the reset button.
-   * Plug in a USB stick formatted as ext4.
-   * Upload `erpwifi-arm64.tar` to `usb1/` and `config.toml` to
-     `usb1/erpwifi/`.
-4. **Run `routeros/1-container.rsc`.** It creates the container network
-   (`172.31.250.0/30`), the NAT and firewall rules, and the container. Then
-   start the container with `/container start [find comment=erpwifi]`.
-5. **Create the hotspot** if you don't have one: `/ip hotspot setup` on your
-   WiFi bridge or VLAN. Put it on its own subnet, not 192.168.6.0/24.
-6. **Run `routeros/2-hotspot.rsc`** with the same secret. Then copy
-   `hotspot/*.html` into the router's `hotspot-erp` directory (Winbox → Files,
-   or `scp hotspot/*.html admin@192.168.6.1:hotspot-erp/`).
-7. Open the dashboard at `http://172.31.250.2:8080` from the admin LAN.
+   /system/package/enable container
+   /system/device-mode/update container=yes
+   ```
+   Then press the reset button briefly, or pull the power, within 5 minutes.
+4. **Config.** Copy `deploy/config.example.toml` to `config.toml` and fill in:
+   * the ERPNext URL and API key
+   * a long random RADIUS secret
+   * the dashboard password hash
+   * your rules
 
-### Security notes
+   Upload it in Winbox → Files to `erpwifi/data/config.toml`.
+5. **Container.** Paste `routeros/core01-1-container.rsc`. Wait until
+   `/container/print` shows it stopped (extracted), then start it with
+   `/container/start [find where interface=veth-erpwifi]`. Check it with
+   `/tool/fetch url=http://172.31.250.2:8080/healthz output=user`.
+6. **Hotspot.** Set the variables in `routeros/core01-2-hotspot.rsc`, then
+   paste it. Both hotspot servers are created **disabled**.
+7. **Roll out in stages.**
+   1. Run `/ip/hotspot/enable hs-erpwifi-wifi` and test with a phone: a staff
+      account, a wrong password and a voucher.
+   2. Check `/queue/simple/print`: the Parent tree is still first, and the
+      hotspot queues are at the bottom.
+   3. Check that cameras, phones and the APs still work.
+   4. Only then run `/ip/hotspot/enable hs-erpwifi-lan` for wired.
+8. **Dashboard.** Open `http://172.31.250.2:8080` from a `WIFI-ADMINS`
+   address (192.168.6.0/24 plus the list in the container script).
 
-* ERPNext has to see the real password, so the hotspot must use **PAP**
-  (`login-by=http-pap`). On an open SSID, add `https` to `login-by` with a
-  certificate on the hotspot profile, or use WPA2/WPA3 on the SSID, so
-  passwords aren't sent in clear over the air. Between the router and the
-  container, RADIUS hides the password with the shared secret, and the
-  container talks to ERPNext over HTTPS.
-* Use a long random RADIUS secret. Requests from unknown addresses or with the
-  wrong secret are dropped.
-* If ERPNext rate-limits logins (HTTP 429), users see "Sign-in service
-  unavailable". Raise the limit in ERPNext if many people sign in at once,
-  for example at the start of a shift.
+## Security
+
+* ERPNext needs the real password, so the hotspot uses **PAP over HTTP**
+  (`login-by=http-pap`).
+  * On WiFi, WPA2 encrypts the radio link.
+  * On wired .80, and between WPA2 clients that share the PSK, the password
+    crosses the LAN unencrypted to the router.
+  * Router → container uses RADIUS password hiding with the shared secret.
+    Container → ERPNext uses HTTPS.
+  * To encrypt the sign-in page as well, add `https` to `login-by` with a
+    certificate for `wifi.trident.local` that the clients trust (install the
+    router CA on company devices), or with a public name.
+* No API or write user is created on the router. Kick and block use RADIUS
+  Disconnect, which is accepted only from the container.
+* Nothing here touches Winbox exposure, the plaintext API on 8728, or
+  password policy (the open router findings).
 
 ## Development
 
@@ -98,6 +117,7 @@ pytest
 ```
 
 The tests start the real RADIUS server and talk to it the way RouterOS does:
-PAP with Message-Authenticator, accounting Start/Interim/Stop and
-Accounting-On. They run against a fake ERPNext (`tests/fake_erpnext.py`), and
-a fake router (`tests/fake_router.py`) that also answers Disconnect-Requests.
+PAP with Message-Authenticator, accounting Start/Interim/Stop/Accounting-On,
+and session-ID reuse after a reboot. They use a fake ERPNext
+(`tests/fake_erpnext.py`) and a fake router (`tests/fake_router.py`) that
+answers Disconnect-Requests.

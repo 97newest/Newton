@@ -20,7 +20,7 @@ erpwifi = "erpwifi.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-erpwifi = ["dictionary", "templates/*.html"]
+erpwifi = ["dictionary", "templates/*.html", "hotspot/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

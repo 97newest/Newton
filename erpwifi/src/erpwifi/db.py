@@ -25,9 +25,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     input_bytes INTEGER NOT NULL DEFAULT 0,
     output_bytes INTEGER NOT NULL DEFAULT 0,
     session_time INTEGER NOT NULL DEFAULT 0,
-    terminate_cause TEXT NOT NULL DEFAULT '',
-    UNIQUE (nas_ip, acct_session_id)
+    terminate_cause TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS sessions_nas ON sessions (nas_ip, acct_session_id);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions (username, started_at);
 CREATE TABLE IF NOT EXISTS vouchers (
     code TEXT PRIMARY KEY,
@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS blocks (
     reason TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     PRIMARY KEY (kind, value)
+);
+CREATE TABLE IF NOT EXISTS credential_cache (
+    login TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    verified_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS auth_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,41 +130,68 @@ class Database:
 
     # -- sessions -------------------------------------------------------
 
+    # Routers restart their Acct-Session-Id counter on reboot, so the same id can
+    # name a new session. A row belongs to an accounting packet only if the user
+    # and device agree, and, once the row is stopped, the start time too (a
+    # retransmitted Stop). A reboot's Accounting-On closes the router's rows.
+    SAME_SESSION_SLACK = 600
+
+    def _find_session(self, c, nas_ip, session_id, username, mac, started_at, open_only=False):
+        rows = c.execute(
+            "SELECT id, username, mac, started_at, stopped_at FROM sessions "
+            "WHERE nas_ip = ? AND acct_session_id = ? ORDER BY id DESC",
+            (nas_ip, session_id),
+        ).fetchall()
+        for row in rows:
+            if row["username"] != username or row["mac"] != normalize_mac(mac):
+                continue
+            if row["stopped_at"] is None:
+                return row["id"]
+            if not open_only and abs(row["started_at"] - started_at) <= self.SAME_SESSION_SLACK:
+                return row["id"]
+        return None
+
+    def _insert_session(self, c, nas_ip, session_id, username, kind, profile, mac, ip,
+                        started_at, now):
+        # Any other open row with this id is a session the router forgot.
+        c.execute(
+            "UPDATE sessions SET stopped_at = ?, terminate_cause = 'replaced' "
+            "WHERE nas_ip = ? AND acct_session_id = ? AND stopped_at IS NULL",
+            (now, nas_ip, session_id),
+        )
+        return c.execute(
+            """INSERT INTO sessions (nas_ip, acct_session_id, username, kind, profile,
+                                     mac, ip, started_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (nas_ip, session_id, username, kind, profile, normalize_mac(mac), ip, started_at, now),
+        ).lastrowid
+
     def acct_start(self, *, nas_ip, session_id, username, kind, profile, mac, ip, now=None):
         now = now or time.time()
         with self._tx() as c:
-            c.execute(
-                """INSERT INTO sessions (nas_ip, acct_session_id, username, kind, profile,
-                                         mac, ip, started_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (nas_ip, acct_session_id) DO UPDATE SET updated_at = excluded.updated_at""",
-                (nas_ip, session_id, username, kind, profile, normalize_mac(mac), ip, now, now),
-            )
+            pk = self._find_session(c, nas_ip, session_id, username, mac, now, open_only=True)
+            if pk is not None:  # retransmitted Start
+                c.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, pk))
+                return
+            self._insert_session(c, nas_ip, session_id, username, kind, profile, mac, ip, now, now)
 
     def acct_update(self, *, nas_ip, session_id, username, input_bytes, output_bytes,
                     session_time, mac="", ip="", kind="", profile="", stop=False, cause="", now=None):
         now = now or time.time()
+        started_at = now - session_time
         with self._tx() as c:
-            row = c.execute(
-                "SELECT id FROM sessions WHERE nas_ip = ? AND acct_session_id = ?",
-                (nas_ip, session_id),
-            ).fetchone()
-            if row is None:
+            pk = self._find_session(c, nas_ip, session_id, username, mac, started_at)
+            if pk is None:
                 # Interim or stop for a session whose start we missed.
-                c.execute(
-                    """INSERT INTO sessions (nas_ip, acct_session_id, username, kind, profile,
-                                             mac, ip, started_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (nas_ip, session_id, username, kind, profile, normalize_mac(mac), ip,
-                     now - session_time, now),
-                )
+                pk = self._insert_session(c, nas_ip, session_id, username, kind, profile, mac,
+                                          ip, started_at, now)
             c.execute(
                 """UPDATE sessions SET input_bytes = ?, output_bytes = ?, session_time = ?,
                           updated_at = ?, stopped_at = ?, terminate_cause = ?,
                           ip = CASE WHEN ? != '' THEN ? ELSE ip END
-                   WHERE nas_ip = ? AND acct_session_id = ?""",
+                   WHERE id = ?""",
                 (input_bytes, output_bytes, session_time, now, now if stop else None, cause,
-                 ip, ip, nas_ip, session_id),
+                 ip, ip, pk),
             )
 
     def close_nas_sessions(self, nas_ip: str, cause: str, now=None):
@@ -277,6 +311,26 @@ class Database:
     def list_blocks(self) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute("SELECT * FROM blocks ORDER BY created_at DESC").fetchall()
+
+    # -- offline sign-in cache -----------------------------------------
+
+    def remember_credential(self, login: str, user_id: str, profile: str, password_hash: str):
+        with self._tx() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO credential_cache (login, user_id, profile, password_hash, "
+                "verified_at) VALUES (?, ?, ?, ?, ?)",
+                (login.strip().lower(), user_id, profile, password_hash, time.time()),
+            )
+
+    def cached_credential(self, login: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM credential_cache WHERE login = ?", (login.strip().lower(),)
+            ).fetchone()
+
+    def forget_credential(self, login: str):
+        with self._tx() as c:
+            c.execute("DELETE FROM credential_cache WHERE login = ?", (login.strip().lower(),))
 
     # -- sign-in log ----------------------------------------------------
 

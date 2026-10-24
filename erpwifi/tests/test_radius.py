@@ -245,3 +245,83 @@ def test_slow_erp_does_not_block_other_logins(stack):
     assert t.monotonic() - start < 1.5
     th.join()
     other.close()
+
+
+def test_router_user_profile_and_address_list(stack):
+    stack.config.radius.router_user_profile = "erpwifi"
+    stack.config.profiles["guest"].address_list = "HS-GUEST"
+    reply = stack.router.login("sam@acme.test", "pw-sam")
+    assert attr(reply, "Mikrotik-Group") == "erpwifi"
+    [code] = stack.db.create_vouchers(1, profile="guest", valid_minutes=60)
+    reply = stack.router.login(code, code)
+    assert attr(reply, "Mikrotik-Address-List") == "HS-GUEST"
+
+
+def test_fail_closed_by_default_when_erpnext_down(stack):
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessAccept
+    stack.erp.down = True
+    reply = stack.router.login("sam@acme.test", "pw-sam")
+    assert reply.code == packet.AccessReject and "unavailable" in attr(reply, "Reply-Message")
+
+
+def test_offline_grace_lets_recent_users_back_in(stack):
+    stack.config.erpnext.offline_grace_hours = 12
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessAccept
+    stack.erp.down = True
+    reply = stack.router.login("sam@acme.test", "pw-sam")
+    assert reply.code == packet.AccessAccept
+    assert attr(reply, "Mikrotik-Rate-Limit") == "10M/20M"  # cached staff profile
+    assert stack.db.recent_auth()[0]["reason"].startswith("Welcome (offline")
+    # wrong password, unknown user, and blocked user are still refused
+    assert stack.router.login("sam@acme.test", "guess").code == packet.AccessReject
+    assert stack.router.login("olu@acme.test", "pw-olu").code == packet.AccessReject
+    stack.db.add_block("user", "sam@acme.test")
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessReject
+
+
+def test_offline_grace_expires_and_password_change_clears_cache(stack):
+    stack.config.erpnext.offline_grace_hours = 1
+    stack.router.login("sam@acme.test", "pw-sam")
+    stack.db._conn.execute("UPDATE credential_cache SET verified_at = verified_at - 7200")
+    stack.db._conn.commit()
+    stack.erp.down = True
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessReject
+
+    stack.erp.down = False
+    stack.router.login("sam@acme.test", "pw-sam")
+    stack.erp.users["sam@acme.test"]["password"] = "new-pw"
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessReject  # ERPNext says no
+    stack.erp.down = True
+    assert stack.router.login("sam@acme.test", "pw-sam").code == packet.AccessReject  # cache dropped
+
+
+def test_reused_session_id_after_router_reboot(stack):
+    """RouterOS restarts Acct-Session-Id numbering on reboot; a new user must not
+    inherit the old row (that made Kick disconnect the wrong person)."""
+    r = stack.router
+    reply = r.login("sam@acme.test", "pw-sam")
+    r.accounting("Start", "sam", "81000001", cls=reply["Class"][0], mac="AA:00:00:00:00:01")
+    r.accounting("Interim-Update", "sam", "81000001", cls=reply["Class"][0],
+                 mac="AA:00:00:00:00:01", download=10 * MB, seconds=300)
+    # Router reboots without a Stop; after Accounting-On, ids start again.
+    r.accounting("Accounting-On", "", "")
+    reply = r.login("olu@acme.test", "pw-olu", mac="AA:00:00:00:00:02")
+    r.accounting("Start", "olu", "81000001", cls=reply["Class"][0], mac="AA:00:00:00:00:02")
+    [s] = stack.db.active_sessions()
+    assert (s["username"], s["mac"], s["output_bytes"]) == ("olu@acme.test", "AA:00:00:00:00:02", 0)
+    # Even without Accounting-On, a different user on the same id gets a new row
+    reply = r.login("jane", "pw-jane", mac="AA:00:00:00:00:03")
+    r.accounting("Start", "jane", "81000001", cls=reply["Class"][0], mac="AA:00:00:00:00:03")
+    [s] = stack.db.active_sessions()
+    assert s["username"] == "jane@acme.test"
+    assert stack.db.usage_since("sam@acme.test", 0)[0] == 10 * MB
+
+
+def test_retransmitted_start_and_stop_counted_once(stack):
+    r = stack.router
+    reply = r.login("sam@acme.test", "pw-sam")
+    for _ in range(2):
+        r.accounting("Start", "sam", "8100abcd", cls=reply["Class"][0])
+    for _ in range(2):
+        r.accounting("Stop", "sam", "8100abcd", cls=reply["Class"][0], download=5 * MB, seconds=60)
+    assert stack.db.usage_since("sam@acme.test", 0) == (5 * MB, 60)
