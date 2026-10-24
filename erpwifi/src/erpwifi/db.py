@@ -1,0 +1,295 @@
+"""SQLite storage for sessions, vouchers, blocks and the sign-in log."""
+
+from __future__ import annotations
+
+import secrets
+import sqlite3
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nas_ip TEXT NOT NULL,
+    acct_session_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
+    mac TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    started_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    stopped_at REAL,
+    input_bytes INTEGER NOT NULL DEFAULT 0,
+    output_bytes INTEGER NOT NULL DEFAULT 0,
+    session_time INTEGER NOT NULL DEFAULT 0,
+    terminate_cause TEXT NOT NULL DEFAULT '',
+    UNIQUE (nas_ip, acct_session_id)
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions (username, started_at);
+CREATE TABLE IF NOT EXISTS vouchers (
+    code TEXT PRIMARY KEY,
+    profile TEXT NOT NULL,
+    valid_minutes INTEGER NOT NULL,
+    max_devices INTEGER NOT NULL DEFAULT 1,
+    data_mb INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    first_used_at REAL,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS blocks (
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    PRIMARY KEY (kind, value)
+);
+CREATE TABLE IF NOT EXISTS auth_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    username TEXT NOT NULL,
+    mac TEXT NOT NULL DEFAULT '',
+    nas_ip TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT ''
+);
+"""
+
+# Letters and digits that can't be confused with each other when printed.
+VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+@dataclass
+class Voucher:
+    code: str
+    profile: str
+    valid_minutes: int
+    max_devices: int
+    data_mb: int
+    note: str
+    created_at: float
+    first_used_at: float | None
+    revoked: bool
+
+    @property
+    def expires_at(self) -> float | None:
+        if self.first_used_at is None:
+            return None
+        return self.first_used_at + self.valid_minutes * 60
+
+    def status(self, now: float) -> str:
+        if self.revoked:
+            return "revoked"
+        if self.first_used_at is None:
+            return "unused"
+        return "expired" if now >= self.expires_at else "active"
+
+
+def normalize_mac(mac: str) -> str:
+    return mac.strip().upper().replace("-", ":")
+
+
+def start_of_day(now: float) -> float:
+    t = time.localtime(now)
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+class Database:
+    def __init__(self, path: str, stale_after: int = 960):
+        self.path = path
+        # A session without an accounting update for this long is treated as
+        # gone (the router rebooted or lost its stop packet).
+        self.stale_after = stale_after
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        if path != ":memory:":
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.executescript(SCHEMA)
+
+    @contextmanager
+    def _tx(self):
+        with self._lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    # -- sessions -------------------------------------------------------
+
+    def acct_start(self, *, nas_ip, session_id, username, kind, profile, mac, ip, now=None):
+        now = now or time.time()
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO sessions (nas_ip, acct_session_id, username, kind, profile,
+                                         mac, ip, started_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (nas_ip, acct_session_id) DO UPDATE SET updated_at = excluded.updated_at""",
+                (nas_ip, session_id, username, kind, profile, normalize_mac(mac), ip, now, now),
+            )
+
+    def acct_update(self, *, nas_ip, session_id, username, input_bytes, output_bytes,
+                    session_time, mac="", ip="", kind="", profile="", stop=False, cause="", now=None):
+        now = now or time.time()
+        with self._tx() as c:
+            row = c.execute(
+                "SELECT id FROM sessions WHERE nas_ip = ? AND acct_session_id = ?",
+                (nas_ip, session_id),
+            ).fetchone()
+            if row is None:
+                # Interim or stop for a session whose start we missed.
+                c.execute(
+                    """INSERT INTO sessions (nas_ip, acct_session_id, username, kind, profile,
+                                             mac, ip, started_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (nas_ip, session_id, username, kind, profile, normalize_mac(mac), ip,
+                     now - session_time, now),
+                )
+            c.execute(
+                """UPDATE sessions SET input_bytes = ?, output_bytes = ?, session_time = ?,
+                          updated_at = ?, stopped_at = ?, terminate_cause = ?,
+                          ip = CASE WHEN ? != '' THEN ? ELSE ip END
+                   WHERE nas_ip = ? AND acct_session_id = ?""",
+                (input_bytes, output_bytes, session_time, now, now if stop else None, cause,
+                 ip, ip, nas_ip, session_id),
+            )
+
+    def close_nas_sessions(self, nas_ip: str, cause: str, now=None):
+        now = now or time.time()
+        with self._tx() as c:
+            c.execute(
+                "UPDATE sessions SET stopped_at = ?, terminate_cause = ? "
+                "WHERE nas_ip = ? AND stopped_at IS NULL",
+                (now, cause, nas_ip),
+            )
+
+    def active_sessions(self, username: str | None = None, now=None) -> list[sqlite3.Row]:
+        now = now or time.time()
+        sql = "SELECT * FROM sessions WHERE stopped_at IS NULL AND updated_at >= ?"
+        args: list = [now - self.stale_after]
+        if username is not None:
+            sql += " AND username = ?"
+            args.append(username)
+        with self._lock:
+            return self._conn.execute(sql + " ORDER BY started_at DESC", args).fetchall()
+
+    def get_session(self, session_pk: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_pk,)).fetchone()
+
+    def usage_since(self, username: str, since: float) -> tuple[int, int]:
+        """Bytes and seconds used by the user in sessions started since `since`."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(input_bytes + output_bytes), 0), COALESCE(SUM(session_time), 0) "
+                "FROM sessions WHERE username = ? AND started_at >= ?",
+                (username, since),
+            ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def usage_report(self, since: float) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(
+                """SELECT username, kind, MAX(profile) AS profile, COUNT(*) AS sessions,
+                          SUM(input_bytes) AS upload, SUM(output_bytes) AS download,
+                          SUM(session_time) AS seconds, MAX(updated_at) AS last_seen
+                   FROM sessions WHERE started_at >= ?
+                   GROUP BY username, kind ORDER BY download + upload DESC""",
+                (since,),
+            ).fetchall()
+
+    # -- vouchers -------------------------------------------------------
+
+    def create_vouchers(self, count: int, *, profile: str, valid_minutes: int, max_devices: int = 1,
+                        data_mb: int = 0, note: str = "", length: int = 8) -> list[str]:
+        codes = []
+        now = time.time()
+        with self._tx() as c:
+            while len(codes) < count:
+                code = "".join(secrets.choice(VOUCHER_ALPHABET) for _ in range(length))
+                try:
+                    c.execute(
+                        """INSERT INTO vouchers (code, profile, valid_minutes, max_devices,
+                                                 data_mb, note, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (code, profile, valid_minutes, max_devices, data_mb, note, now),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                codes.append(code)
+        return codes
+
+    def get_voucher(self, code: str) -> Voucher | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM vouchers WHERE code = ?", (code.strip().upper(),)
+            ).fetchone()
+        if row is None:
+            return None
+        return Voucher(**{**dict(row), "revoked": bool(row["revoked"])})
+
+    def list_vouchers(self, limit: int = 500) -> list[Voucher]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM vouchers ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [Voucher(**{**dict(r), "revoked": bool(r["revoked"])}) for r in rows]
+
+    def mark_voucher_used(self, code: str, now=None):
+        with self._tx() as c:
+            c.execute(
+                "UPDATE vouchers SET first_used_at = ? WHERE code = ? AND first_used_at IS NULL",
+                (now or time.time(), code),
+            )
+
+    def revoke_voucher(self, code: str):
+        with self._tx() as c:
+            c.execute("UPDATE vouchers SET revoked = 1 WHERE code = ?", (code,))
+
+    # -- blocks ---------------------------------------------------------
+
+    def add_block(self, kind: str, value: str, reason: str = ""):
+        value = normalize_mac(value) if kind == "mac" else value.strip().lower()
+        with self._tx() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO blocks (kind, value, reason, created_at) VALUES (?, ?, ?, ?)",
+                (kind, value, reason, time.time()),
+            )
+
+    def remove_block(self, kind: str, value: str):
+        with self._tx() as c:
+            c.execute("DELETE FROM blocks WHERE kind = ? AND value = ?", (kind, value))
+
+    def is_blocked(self, username: str, mac: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT kind FROM blocks WHERE (kind = 'user' AND value = ?) OR (kind = 'mac' AND value = ?)",
+                (username.strip().lower(), normalize_mac(mac)),
+            ).fetchone()
+        return row["kind"] if row else None
+
+    def list_blocks(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM blocks ORDER BY created_at DESC").fetchall()
+
+    # -- sign-in log ----------------------------------------------------
+
+    def log_auth(self, username, mac, nas_ip, result, reason="", profile=""):
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO auth_log (ts, username, mac, nas_ip, result, reason, profile) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), username, normalize_mac(mac), nas_ip, result, reason, profile),
+            )
+
+    def recent_auth(self, limit: int = 200) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM auth_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()

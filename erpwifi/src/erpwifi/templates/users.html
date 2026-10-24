@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Usage today</h1>
+<div class="card">
+{% if usage %}
+<table>
+  <tr><th>User</th><th>Type</th><th>Profile</th><th>Sessions</th><th>Down</th><th>Up</th><th>Time</th><th>Last seen</th></tr>
+  {% for u in usage %}
+  <tr><td>{{ u.username }}</td><td>{{ u.kind or '—' }}</td><td>{{ u.profile or '—' }}</td><td>{{ u.sessions }}</td>
+      <td>{{ u.download|bytes }}</td><td>{{ u.upload|bytes }}</td><td>{{ u.seconds|duration }}</td><td>{{ u.last_seen|time }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No usage yet today.</p>{% endif %}
+</div>
+
+<h2>Blocked</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('add_block') }}" class="row" style="margin-bottom:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Type<select name="kind"><option value="user">ERP user</option><option value="mac">Device MAC</option></select></label>
+    <label>User or MAC<input name="value" required placeholder="jane@example.com"></label>
+    <label>Reason<input name="reason"></label>
+    <button class="danger">Block</button>
+  </form>
+  {% if blocks %}
+  <table>
+    <tr><th>Type</th><th>Value</th><th>Reason</th><th>Since</th><th></th></tr>
+    {% for b in blocks %}
+    <tr><td>{{ b.kind }}</td><td>{{ b.value }}</td><td>{{ b.reason }}</td><td>{{ b.created_at|time }}</td>
+      <td><form class="inline" method="post" action="{{ url_for('remove_block') }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="{{ b.kind }}">
+        <input type="hidden" name="value" value="{{ b.value }}"><button>Unblock</button></form></td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">Nothing is blocked.</p>{% endif %}
+</div>
+{% endblock %}

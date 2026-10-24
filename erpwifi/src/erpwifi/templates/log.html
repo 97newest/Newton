@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Sign-in log</h1>
+<div class="card">
+{% if entries %}
+<table>
+  <tr><th>Time</th><th>User</th><th>Result</th><th>Reason</th><th>Profile</th><th>MAC</th><th>Router</th></tr>
+  {% for e in entries %}
+  <tr><td>{{ e.ts|time }}</td><td>{{ e.username }}</td><td><span class="tag {{ e.result }}">{{ e.result }}</span></td>
+      <td>{{ e.reason }}</td><td>{{ e.profile }}</td><td>{{ e.mac }}</td><td>{{ e.nas_ip }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No sign-ins yet.</p>{% endif %}
+</div>
+{% endblock %}

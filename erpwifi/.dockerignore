@@ -1,0 +1,7 @@
+tests
+hotspot
+routeros
+deploy
+**/__pycache__
+*.db
+*.tar

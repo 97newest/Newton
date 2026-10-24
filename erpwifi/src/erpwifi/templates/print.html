@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block head %}<style>
+  .tickets { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+  .ticket { border:1px dashed var(--muted); border-radius:8px; padding:14px; text-align:center; background:var(--card); }
+  .ticket code { display:block; font-size:24px; letter-spacing:3px; margin:8px 0; }
+  @media print { header, .noprint { display:none; } body { background:#fff; color:#000; } .ticket { break-inside:avoid; } }
+</style>{% endblock %}
+{% block body %}
+<div class="noprint row" style="margin-bottom:14px"><button class="primary" onclick="window.print()">Print</button>
+  <a class="btn" href="{{ url_for('vouchers') }}">Back to vouchers</a></div>
+<div class="tickets">
+{% for v in vouchers %}
+  <div class="ticket">
+    <div>Guest WiFi voucher</div>
+    <code>{{ v.code }}</code>
+    <div class="muted">Valid {{ (v.valid_minutes * 60)|duration }} from first use · {{ v.max_devices }} device{{ 's' if v.max_devices > 1 }}</div>
+    {% if v.note %}<div class="muted">{{ v.note }}</div>{% endif %}
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

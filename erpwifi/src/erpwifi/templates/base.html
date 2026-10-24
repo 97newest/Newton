@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}WiFi admin{% endblock %}</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#e3e6eb;
+          --accent:#2563eb; --danger:#c62828; --ok:#1b7f3b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2128; --text:#e6e8eb; --muted:#9aa2ad; --line:#2d333c;
+            --accent:#5b8def; --danger:#ef6461; --ok:#4cc27a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; flex-wrap:wrap; gap:4px 18px; align-items:center; padding:12px 16px; background:var(--card); border-bottom:1px solid var(--line); }
+  header strong { margin-right:12px; }
+  header a { color:var(--muted); text-decoration:none; }
+  header a.on { color:var(--text); font-weight:600; }
+  header form { margin-left:auto; }
+  main { max-width:1100px; margin:0 auto; padding:18px 16px 40px; }
+  h1 { font-size:20px; margin:0 0 14px; }
+  h2 { font-size:16px; margin:26px 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:13px; }
+  tr:last-child td { border-bottom:0; }
+  button, .btn { font:inherit; padding:5px 11px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; text-decoration:none; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--danger); }
+  input, select { font:inherit; padding:6px 8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  form.inline { display:inline; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+  .row label { display:flex; flex-direction:column; font-size:13px; color:var(--muted); gap:3px; }
+  .flash { padding:9px 12px; border-radius:6px; margin-bottom:12px; border:1px solid var(--line); background:var(--card); }
+  .flash.error { border-color:var(--danger); color:var(--danger); }
+  .flash.ok { border-color:var(--ok); color:var(--ok); }
+  .muted { color:var(--muted); }
+  .tag { font-size:12px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
+  .tag.reject, .tag.revoked, .tag.expired { color:var(--danger); }
+  .tag.accept, .tag.active { color:var(--ok); }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if session.admin %}
+<header>
+  <strong>WiFi admin</strong>
+  {% set ep = request.endpoint %}
+  <a href="{{ url_for('online') }}" class="{{ 'on' if ep == 'online' }}">Online</a>
+  <a href="{{ url_for('users') }}" class="{{ 'on' if ep == 'users' }}">Usage &amp; blocks</a>
+  <a href="{{ url_for('vouchers') }}" class="{{ 'on' if ep == 'vouchers' }}">Vouchers</a>
+  <a href="{{ url_for('auth_log') }}" class="{{ 'on' if ep == 'auth_log' }}">Sign-in log</a>
+  <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Sign out</button></form>
+</header>
+{% endif %}
+<main>
+{% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

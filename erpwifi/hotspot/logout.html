@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signed out</title>
+<style>
+  :root { --bg:#f3f5f8; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#dfe3e8; --accent:#2563eb; --danger:#c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1d2128; --text:#e6e8eb; --muted:#9aa2ad; --line:#2d333c; --accent:#5b8def; --danger:#ef6461; } }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px;
+         font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  .card { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; }
+  h1 { font-size:20px; margin:0 0 4px; } p { margin:0 0 16px; color:var(--muted); }
+  .tabs { display:flex; gap:4px; margin:0 0 16px; border-bottom:1px solid var(--line); }
+  .tabs button { flex:1; background:none; border:0; border-bottom:2px solid transparent; padding:8px; font:inherit; color:var(--muted); cursor:pointer; }
+  .tabs button.on { color:var(--text); border-color:var(--accent); font-weight:600; }
+  form { display:grid; gap:10px; } form[hidden] { display:none; }
+  input { font:inherit; padding:11px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); width:100%; }
+  input.code { text-transform:uppercase; letter-spacing:3px; text-align:center; }
+  .btn { font:inherit; padding:11px; border-radius:8px; border:0; background:var(--accent); color:#fff; cursor:pointer; width:100%; text-decoration:none; display:block; text-align:center; }
+  .btn.secondary { background:none; border:1px solid var(--line); color:var(--text); }
+  .error { color:var(--danger); border:1px solid var(--danger); border-radius:8px; padding:9px 12px; margin-bottom:14px; }
+  table { width:100%; border-collapse:collapse; margin-bottom:16px; } td { padding:6px 0; border-bottom:1px solid var(--line); } td:last-child { text-align:right; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>You are signed out</h1>
+  <table>
+    <tr><td>Session length</td><td>$(uptime)</td></tr>
+    <tr><td>Downloaded / uploaded</td><td>$(bytes-out-nice) / $(bytes-in-nice)</td></tr>
+  </table>
+  <a class="btn" href="$(link-login)">Sign in again</a>
+</div>
+</body>
+</html>

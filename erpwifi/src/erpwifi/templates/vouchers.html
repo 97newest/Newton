@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Guest vouchers</h1>
+<div class="card">
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>How many<input name="count" type="number" min="1" max="500" value="1" style="width:80px"></label>
+    <label>Profile<select name="profile">{% for p in profiles %}<option {{ 'selected' if p == defaults.default_profile }}>{{ p }}</option>{% endfor %}</select></label>
+    <label>Valid for (minutes after first use)<input name="minutes" type="number" min="1" value="{{ defaults.default_minutes }}" style="width:120px"></label>
+    <label>Devices<input name="devices" type="number" min="1" value="1" style="width:70px"></label>
+    <label>Data cap MB (0 = profile)<input name="data_mb" type="number" min="0" value="0" style="width:110px"></label>
+    <label>Note<input name="note" placeholder="Visitor name"></label>
+    <button class="primary">Create</button>
+  </form>
+</div>
+<h2>All vouchers</h2>
+<div class="card">
+{% if vouchers %}
+<table>
+  <tr><th>Code</th><th>Status</th><th>Profile</th><th>Valid</th><th>Devices</th><th>Data cap</th><th>Note</th><th>First used</th><th>Expires</th><th></th></tr>
+  {% for v in vouchers %}{% set st = v.status(now) %}
+  <tr><td><code>{{ v.code }}</code></td><td><span class="tag {{ st }}">{{ st }}</span></td><td>{{ v.profile }}</td>
+    <td>{{ (v.valid_minutes * 60)|duration }}</td><td>{{ v.max_devices }}</td><td>{{ v.data_mb ~ ' MB' if v.data_mb else 'profile' }}</td>
+    <td>{{ v.note }}</td><td>{{ v.first_used_at|time }}</td><td>{{ v.expires_at|time }}</td>
+    <td>{% if st in ('unused', 'active') %}
+      <a class="btn" href="{{ url_for('print_vouchers', codes=v.code) }}">Print</a>
+      <form class="inline" method="post" action="{{ url_for('revoke_voucher', code=v.code) }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Revoke</button></form>{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No vouchers yet.</p>{% endif %}
+</div>
+{% endblock %}

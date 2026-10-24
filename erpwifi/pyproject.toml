@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "erpwifi"
+version = "0.1.0"
+description = "WiFi sign-in for MikroTik hotspots with ERPNext accounts, guest vouchers and an admin dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pyrad>=2.5", "flask>=3", "requests>=2.31", "waitress>=3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+erpwifi = "erpwifi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+erpwifi = ["dictionary", "templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

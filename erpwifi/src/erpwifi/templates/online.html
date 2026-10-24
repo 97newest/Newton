@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block body %}
+<h1>Online now <span class="muted">({{ sessions|length }})</span></h1>
+<div class="card">
+{% if sessions %}
+<table>
+  <tr><th>User</th><th>Type</th><th>Profile</th><th>MAC</th><th>IP</th><th>Online for</th><th>Down</th><th>Up</th><th></th></tr>
+  {% for s in sessions %}
+  <tr>
+    <td>{{ s.username }}</td><td>{{ s.kind or '—' }}</td><td>{{ s.profile or '—' }}</td>
+    <td>{{ s.mac }}</td><td>{{ s.ip }}</td>
+    <td>{{ (now - s.started_at)|duration }}</td>
+    <td>{{ s.output_bytes|bytes }}</td><td>{{ s.input_bytes|bytes }}</td>
+    <td>
+      <form class="inline" method="post" action="{{ url_for('kick_session', pk=s.id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button>Kick</button></form>
+      <form class="inline" method="post" action="{{ url_for('add_block') }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="user">
+        <input type="hidden" name="value" value="{{ s.username }}"><input type="hidden" name="back" value="{{ url_for('online') }}">
+        <button class="danger">Block user</button></form>
+      <form class="inline" method="post" action="{{ url_for('add_block') }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="mac">
+        <input type="hidden" name="value" value="{{ s.mac }}"><input type="hidden" name="back" value="{{ url_for('online') }}">
+        <button class="danger">Block device</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">Nobody is connected.</p>{% endif %}
+</div>
+{% endblock %}

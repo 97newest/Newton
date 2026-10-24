@@ -1,0 +1,93 @@
+# erpwifi configuration. Copy to config.toml (on the router: usb1/erpwifi/config.toml)
+# and fill in the values marked CHANGE.
+
+[radius]
+listen = "0.0.0.0"
+auth_port = 1812
+acct_port = 1813
+# How often the router sends usage updates (seconds). Must match
+# radius-interim-update on the hotspot profile.
+interim_interval = 300
+
+# The router, as seen from this server. When erpwifi runs as a container on the
+# RB5009 this is the router's address on the container bridge.
+[[radius.clients]]
+address = "172.31.250.1"
+secret = "CHANGE-to-a-long-random-string"   # same as /radius secret on the router
+name = "0. Firewall"
+coa_port = 3799                               # /radius incoming port, used for "Kick"
+
+[erpnext]
+url = "https://erp.example.com"   # CHANGE
+# API key/secret of an ERPNext user allowed to read User and Employee
+# (User > API Access > Generate Keys). Needed for role/department rules.
+api_key = "CHANGE"
+api_secret = "CHANGE"
+timeout = 8
+verify_tls = true
+# Only users with one of these roles may use the WiFi. [] = any enabled user.
+require_roles = ["Employee"]
+
+[policy]
+default_profile = "staff"
+
+# Limit profiles. rate_limit is MikroTik format "upload/download" for the
+# client, e.g. "5M/20M". 0 or "" means unlimited.
+[profiles.staff]
+rate_limit = "10M/30M"
+session_timeout = 43200    # seconds per session
+idle_timeout = 900
+daily_data_mb = 5120
+max_devices = 3
+
+[profiles.management]
+rate_limit = "50M/100M"
+max_devices = 5
+
+[profiles.restricted]
+rate_limit = "2M/5M"
+session_timeout = 7200
+daily_data_mb = 1024
+daily_time_min = 240
+max_devices = 1
+
+[profiles.guest]
+rate_limit = "2M/10M"
+session_timeout = 14400
+idle_timeout = 600
+max_devices = 1
+
+# First matching rule wins; anyone else gets policy.default_profile.
+# department matches ERPNext departments with or without the " - COMPANY" suffix.
+[[rules]]
+role = "System Manager"
+profile = "management"
+
+[[rules]]
+department = "Management"
+profile = "management"
+
+[[rules]]
+department = "Production"
+profile = "restricted"
+
+# [[rules]]
+# user = "someone@example.com"
+# profile = "management"
+
+[vouchers]
+default_profile = "guest"
+default_minutes = 1440     # validity after first use
+code_length = 8
+
+[dashboard]
+listen = "0.0.0.0"
+port = 8080
+admin_username = "admin"
+# Generate with: erpwifi hash-password
+admin_password_hash = ""
+# Random string; keeps admins signed in across restarts.
+secret_key = "CHANGE-to-a-long-random-string"
+
+[database]
+path = "/data/erpwifi.db"

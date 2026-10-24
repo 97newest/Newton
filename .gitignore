@@ -3,3 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+erpwifi-*.tar
