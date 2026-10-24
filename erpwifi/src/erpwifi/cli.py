@@ -29,6 +29,7 @@ def cmd_run(args):
 
     from .dashboard import create_app
     from .policy import Policy
+    from .portal import create_portal_app
     from .radius import RadiusServer
 
     config = _load(args)
@@ -36,11 +37,19 @@ def cmd_run(args):
         os.environ["TZ"] = config.timezone
         time.tzset()
     db = Database(config.database, stale_after=config.radius.interim_interval * 3 + 60)
-    radius = RadiusServer(config, db, Policy(config, db, ERPNextClient(config.erpnext)))
+    erp = ERPNextClient(config.erpnext)
+    radius = RadiusServer(config, db, Policy(config, db, erp))
     threading.Thread(target=radius.serve_forever, name="radius", daemon=True).start()
     if not config.dashboard.admin_password_hash:
-        logging.warning("dashboard.admin_password_hash is empty: dashboard sign-in is disabled")
-    app = create_app(config, db)
+        logging.warning("dashboard.admin_password_hash is empty: local admin sign-in is disabled")
+    if config.passes.requests_enabled:
+        portal = create_portal_app(config, db)
+        logging.info("Visitor requests on http://%s:%d", config.dashboard.listen,
+                     config.dashboard.portal_port)
+        threading.Thread(target=serve, name="portal", daemon=True, args=(portal,),
+                         kwargs={"host": config.dashboard.listen,
+                                 "port": config.dashboard.portal_port, "threads": 2}).start()
+    app = create_app(config, db, erp=erp)
     logging.info("Dashboard on http://%s:%d", config.dashboard.listen, config.dashboard.port)
     serve(app, host=config.dashboard.listen, port=config.dashboard.port, threads=4)
 

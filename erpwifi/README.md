@@ -2,8 +2,9 @@
 
 Everyone who connects to **WiFi (vlan81, 192.168.81.0/24)** or **wired LAN
 (bridge1, 192.168.80.0/24)** must sign in with their **ERPNext** account
-before they get internet or internal access. Guests use **voucher codes**,
-which give internet only. Limits come from the person's ERPNext role or
+before they get internet or internal access. Visitors ask for **temporary
+access**, and an admin approves it and hands over a code or QR code. Guests
+can also use pre-printed **voucher codes**. Both give internet only. Limits come from the person's ERPNext role or
 department. The admin dashboard shows who is online and lets you kick or block
 users and devices, create and print vouchers, see usage, and read the sign-in
 log.
@@ -14,9 +15,52 @@ The service runs as a container **on the router** (core-01, RB5009, RouterOS
 ```
  WiFi 192.168.81.x (vlan81) ┐                          ┌─▶ ERPNext  /api/method/login
  wired 192.168.80.x (bridge1)┴▶ core-01 hotspot ──RADIUS─▶ erpwifi container 172.31.250.2
-                                (sign-in page)  ◀─Disconnect (Kick)─┘  dashboard :8080 (WIFI-ADMINS)
+                                (sign-in page)  ◀─Disconnect (Kick)─┘  dashboard :80 (WIFI-ADMINS)
+                                     └─ walled garden ─▶ visitor request page :8081
  cameras .30, PBX .50, switches/APs .6 ──▶ bypassed by MAC (from the static ARP list)
 ```
+
+## What people see
+
+As soon as a phone or laptop joins WiFi (.81) or plugs into the wired LAN
+(.80), the sign-in page opens. It offers two choices:
+
+* **Staff: sign in with ERP.** The person enters their ERP email or username
+  and password, then gets on with the limits of their role or department.
+* **Visitor: temporary access.** The visitor taps **Request access** and
+  enters their name, company and who they are visiting. Their screen then
+  waits for approval and updates by itself.
+  * The request shows up on the dashboard's **Requests** page, with a counter
+    in the menu. Whoever is at the desk picks **3 or 4 hours** and approves
+    it.
+  * The dashboard then shows a **code and QR codes** to read out, show on
+    screen or print. One QR code joins the WiFi, if `wifi_ssid` is set. The
+    other signs the phone in.
+  * The visitor's own screen only says "approved, ask for your code". The code
+    is handed over by a person, so nobody gets access just by asking.
+  * Visitors who already have a code enter it under **Guest code**.
+
+A temporary pass stops working a fixed 3 or 4 hours after it was issued,
+whether it was used or not. It covers one device, gives internet only, and
+can be revoked at any time, which also disconnects the visitor. Reception can
+also issue passes directly, without a request, on **Temporary passes**.
+Unanswered requests lapse after 30 minutes.
+
+## Admin access
+
+The dashboard is at **http://wifi-admin.trident.local**. The router's DNS
+points that name at the container. The sign-in page also has a small *Admin*
+link to it. Three kinds of login work:
+
+* **ERP accounts:** users with an `erp_admin_roles` role (System Manager)
+  get the full dashboard. Users with an `erp_issuer_roles` role
+  (Receptionist) only get Requests and Temporary passes.
+* **Local `admin` account:** works even when ERPNext is down.
+* **Optional local reception logins** (`[[dashboard.issuers]]`) for a shared
+  front-desk PC.
+
+The router only lets the `WIFI-ADMINS` networks open it (192.168.6.0/24, .80,
+.81). Voucher and pass guests can't reach it.
 
 ## How it fits the current setup
 
@@ -79,7 +123,7 @@ session.
 5. **Container.** Paste `routeros/core01-1-container.rsc`. Wait until
    `/container/print` shows it stopped (extracted), then start it with
    `/container/start [find where interface=veth-erpwifi]`. Check it with
-   `/tool/fetch url=http://172.31.250.2:8080/healthz output=user`.
+   `/tool/fetch url=http://172.31.250.2/healthz output=user`.
 6. **Hotspot.** Set the variables in `routeros/core01-2-hotspot.rsc`, then
    paste it. Both hotspot servers are created **disabled**.
 7. **Roll out in stages.**
@@ -89,8 +133,12 @@ session.
       hotspot queues are at the bottom.
    3. Check that cameras, phones and the APs still work.
    4. Only then run `/ip/hotspot/enable hs-erpwifi-lan` for wired.
-8. **Dashboard.** Open `http://172.31.250.2:8080` from a `WIFI-ADMINS`
-   address (192.168.6.0/24 plus the list in the container script).
+8. **Dashboard.** Open `http://wifi-admin.trident.local` from a
+   `WIFI-ADMINS` address.
+9. **Check the sign-in QR code.** Scan a pass's sign-in QR code with a phone
+   on WiFi. It opens `login_url?username=CODE&password=CODE`, which RouterOS
+   hotspots accept as a login. If your build refuses it, typing the code
+   still works.
 
 ## Security
 

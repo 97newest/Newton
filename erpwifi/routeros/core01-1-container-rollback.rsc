@@ -9,7 +9,8 @@
 :delay 5s
 /container/remove [find where interface=veth-erpwifi]
 :do { /container/mounts/remove [find where src="erpwifi/data"] } on-error={}
-/ip/firewall/filter/remove [find where comment~"^erpwifi: (dashboard|container)"]
+/ip/firewall/filter/remove [find where comment~"^erpwifi: (dashboard|container|visitor)"]
+/ip/dns/static/remove [find where comment="erpwifi"]
 /ip/firewall/address-list/remove [find where list=WIFI-ADMINS and comment="erpwifi"]
 /interface/bridge/port/remove [find where interface=veth-erpwifi]
 /interface/veth/remove [find where name=veth-erpwifi]

@@ -44,14 +44,21 @@
 {% block head %}{% endblock %}
 </head>
 <body>
-{% if session.admin %}
+{% if session.role %}
 <header>
   <strong>WiFi admin</strong>
   {% set ep = request.endpoint %}
+  {% if session.role == 'admin' %}
   <a href="{{ url_for('online') }}" class="{{ 'on' if ep == 'online' }}">Online</a>
   <a href="{{ url_for('users') }}" class="{{ 'on' if ep == 'users' }}">Usage &amp; blocks</a>
+  {% endif %}
+  <a href="{{ url_for('requests_page') }}" class="{{ 'on' if ep == 'requests_page' }}">Requests{% if pending_requests %} <span class="tag active">{{ pending_requests }}</span>{% endif %}</a>
+  <a href="{{ url_for('passes') }}" class="{{ 'on' if ep in ('passes', 'show_passes') }}">Temporary passes</a>
+  {% if session.role == 'admin' %}
   <a href="{{ url_for('vouchers') }}" class="{{ 'on' if ep == 'vouchers' }}">Vouchers</a>
   <a href="{{ url_for('auth_log') }}" class="{{ 'on' if ep == 'auth_log' }}">Sign-in log</a>
+  {% endif %}
+  <span class="muted">{{ session.user }}</span>
   <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Sign out</button></form>
 </header>
 {% endif %}

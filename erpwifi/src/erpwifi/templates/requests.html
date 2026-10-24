@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="15">{% endblock %}
+{% block body %}
+<h1>Access requests</h1>
+<p class="muted">Visitors ask from the WiFi sign-in page. Approving issues a temporary pass and shows you its code and QR code to hand over. The visitor never sees the code on their own screen.</p>
+<div class="card">
+{% if pending %}
+<table>
+  <tr><th>Asked</th><th>Name</th><th>Company</th><th>Visiting</th><th>Phone</th><th>Reason</th><th>Device</th><th></th></tr>
+  {% for r in pending %}
+  <tr><td>{{ (now - r.created_at)|duration }} ago</td><td><strong>{{ r.name }}</strong></td><td>{{ r.organisation }}</td>
+    <td>{{ r.visiting }}</td><td>{{ r.phone }}</td><td>{{ r.reason }}</td><td class="muted">{{ r.ip }}<br>{{ r.mac }}</td>
+    <td>
+      <form class="inline" method="post" action="{{ url_for('approve_request', pk=r.id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <select name="hours">{% for h in cfg.hours %}<option value="{{ h }}">{{ h }} h</option>{% endfor %}</select>
+        <button class="primary">Approve</button></form>
+      <form class="inline" method="post" action="{{ url_for('decline_request', pk=r.id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Decline</button></form>
+    </td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No requests waiting. This page refreshes every 15 seconds.</p>{% endif %}
+</div>
+<h2>Recent decisions</h2>
+<div class="card">
+{% if decided %}
+<table>
+  <tr><th>Asked</th><th>Name</th><th>Visiting</th><th>Result</th><th>By</th><th>Pass</th></tr>
+  {% for r in decided %}
+  <tr><td>{{ r.created_at|time }}</td><td>{{ r.name }}</td><td>{{ r.visiting }}</td>
+    <td><span class="tag {{ 'accept' if r.status == 'approved' else 'reject' }}">{{ r.status }}</span></td>
+    <td>{{ r.decided_by }}</td>
+    <td>{% if r.pass_code %}<a href="{{ url_for('show_passes', codes=r.pass_code) }}">{{ r.pass_code }}</a>{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">Nothing yet.</p>{% endif %}
+</div>
+{% endblock %}

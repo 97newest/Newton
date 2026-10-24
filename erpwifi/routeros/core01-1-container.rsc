@@ -15,8 +15,9 @@
 
 :local registry "https://ghcr.io"
 :local image "97newest/erpwifi:latest"
-# Extra admin PCs (outside 192.168.6.0/24) allowed to open the dashboard.
-:local adminAddresses {"192.168.80.0/24"}
+# Networks (besides 192.168.6.0/24) allowed to open the dashboard. The
+# dashboard asks for an admin account or an ERP user with an admin role.
+:local adminAddresses {"192.168.80.0/24";"192.168.81.0/24"}
 # Set if ERPNext runs on an internal server, e.g. "192.168.5.5". Leave "" if
 # ERPNext is on the internet.
 :local erpnextLanIp ""
@@ -33,7 +34,8 @@
 # Each goes to the top; the drop is added first so it ends up below the accepts.
 # Internet traffic is already masqueraded by the existing pppoe-faiba srcnat rule.
 /ip/firewall/filter add chain=forward action=drop dst-address=172.31.250.2 connection-state=new place-before=0 comment="erpwifi: dashboard closed to everyone else"
-/ip/firewall/filter add chain=forward action=accept dst-address=172.31.250.2 protocol=tcp dst-port=8080 src-address-list=WIFI-ADMINS place-before=0 comment="erpwifi: dashboard for WIFI-ADMINS"
+/ip/firewall/filter add chain=forward action=accept dst-address=172.31.250.2 protocol=tcp dst-port=80 src-address-list=WIFI-ADMINS place-before=0 comment="erpwifi: dashboard for WIFI-ADMINS"
+/ip/firewall/filter add chain=forward action=accept dst-address=172.31.250.2 protocol=tcp dst-port=8081 src-address-list=LAN place-before=0 comment="erpwifi: visitor request page"
 /ip/firewall/filter add chain=forward action=accept src-address=172.31.250.2 out-interface-list=WAN place-before=0 comment="erpwifi: container to internet (ERPNext, image)"
 :if ([:len $erpnextLanIp] > 0) do={
     /ip/firewall/filter add chain=forward action=accept src-address=172.31.250.2 dst-address=$erpnextLanIp protocol=tcp dst-port=80,443 place-before=0 comment="erpwifi: container to ERPNext"
@@ -56,6 +58,9 @@
     /container add remote-image=$image interface=veth-erpwifi root-dir=erpwifi/root mountlists=erpwifi-data dns=172.31.250.1 start-on-boot=yes logging=yes
 }
 
+# Friendly address for the dashboard: http://wifi-admin.trident.local
+/ip/dns/static add name=wifi-admin.trident.local address=172.31.250.2 comment="erpwifi"
+
 :put "Image is downloading. Watch: /container/print   (status goes extracting -> stopped)"
 :put "Then start it:   /container/start [find where interface=veth-erpwifi]"
-:put "Check it:        /tool/fetch url=http://172.31.250.2:8080/healthz output=user"
+:put "Check it:        /tool/fetch url=http://172.31.250.2/healthz output=user"

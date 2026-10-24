@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block head %}<style>
+  .tickets { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+  .ticket { border:1px dashed var(--muted); border-radius:10px; padding:16px; text-align:center; background:var(--card); }
+  .ticket .code { display:block; font:600 30px/1.2 ui-monospace,monospace; letter-spacing:4px; margin:6px 0 2px; }
+  .qrs { display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:12px 0 6px; }
+  .qr { font-size:13px; color:var(--muted); max-width:150px; }
+  .qr svg { display:block; width:140px; height:140px; margin:0 auto 4px; background:#fff; border-radius:6px; }
+  ol { text-align:left; margin:8px 0 0; padding-left:20px; font-size:14px; }
+  @media print { header, .noprint { display:none; } body { background:#fff; color:#000; } .ticket { break-inside:avoid; } }
+</style>{% endblock %}
+{% block body %}
+<div class="noprint row" style="margin-bottom:14px">
+  <button class="primary" onclick="window.print()">Print</button>
+  <a class="btn" href="{{ url_for('passes') }}">Back to passes</a>
+</div>
+<div class="tickets">
+{% for t in tickets %}{% set v = t.pass %}
+  <div class="ticket">
+    <div>Temporary WiFi pass{% if v.note %} · {{ v.note }}{% endif %}</div>
+    <span class="code">{{ v.code }}</span>
+    <div class="muted">Valid until {{ v.expires_at|time }} · {{ v.max_devices }} device{{ 's' if v.max_devices > 1 }}</div>
+    <div class="qrs">
+      {% if wifi_qr %}<div class="qr">{{ wifi_qr }}1. Join “{{ cfg.wifi_ssid }}”</div>{% endif %}
+      <div class="qr">{{ t.qr }}{{ '2. ' if wifi_qr }}Sign in</div>
+    </div>
+    <ol>
+      <li>Connect to {% if cfg.wifi_ssid %}“{{ cfg.wifi_ssid }}”{% else %}the WiFi{% endif %}{% if wifi_qr %} (scan the first code){% endif %}.</li>
+      <li>Scan the sign-in code, or open any web page and enter <strong>{{ v.code }}</strong> under “Guest code”.</li>
+    </ol>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

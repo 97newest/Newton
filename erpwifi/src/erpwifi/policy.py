@@ -115,19 +115,21 @@ class Policy:
 
     def _voucher(self, voucher, password: str, mac: str) -> Decision:
         code = voucher.code
+        label = "Temporary pass" if voucher.kind == "pass" else "Voucher"
         if not hmac.compare_digest(password.strip().upper(), code):
-            return Decision(False, "Invalid voucher", username=code)
+            return Decision(False, f"Invalid {label.lower()}", username=code)
         now = time.time()
         status = voucher.status(now)
         if status in ("revoked", "expired"):
-            return Decision(False, f"Voucher {status}", username=code, kind="voucher")
+            return Decision(False, f"{label} {status}", username=code, kind=voucher.kind)
         profile = self.config.profiles.get(voucher.profile)
         if profile is None:
-            return Decision(False, "Voucher profile no longer exists", username=code)
+            return Decision(False, f"{label} profile no longer exists", username=code)
         decision = self._limits(
-            code, "voucher", profile, mac,
+            code, voucher.kind, profile, mac,
             max_devices=voucher.max_devices,
-            data_bytes=voucher.data_mb * MB,
+            # 0 means the profile's allowance, counted from first use
+            data_bytes=voucher.data_mb * MB or None,
             usage_since=voucher.first_used_at or now,
             expires_at=voucher.expires_at or now + voucher.valid_minutes * 60,
         )
@@ -168,7 +170,7 @@ class Policy:
         if expires_at is not None:
             left = int(expires_at - now)
             if left <= 0:
-                return reject("Voucher expired")
+                return reject("Temporary pass expired" if kind == "pass" else "Voucher expired")
             timeouts.append(left)
 
         attrs: dict = {

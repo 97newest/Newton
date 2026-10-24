@@ -1,0 +1,17 @@
+{% extends "portal_base.html" %}
+{% block body %}
+<h1>Request temporary access</h1>
+<p>Reception or your host will approve it and give you a code or QR code.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="mac" value="{{ mac }}">
+  <label>Your name<input name="name" value="{{ form.name }}" required maxlength="100" autocomplete="name"></label>
+  <label>Company (optional)<input name="organisation" value="{{ form.organisation }}" maxlength="100" autocomplete="organization"></label>
+  <label>Who are you visiting?<input name="visiting" value="{{ form.visiting }}" required maxlength="100"></label>
+  <label>Phone (optional)<input name="phone" value="{{ form.phone }}" maxlength="30" type="tel" autocomplete="tel"></label>
+  <label>Reason (optional)<input name="reason" value="{{ form.reason }}" maxlength="200"></label>
+  <button class="btn">Send request</button>
+</form>
+<div class="small"><a href="{{ sign_in_url }}">Back to sign-in</a></div>
+{% endblock %}

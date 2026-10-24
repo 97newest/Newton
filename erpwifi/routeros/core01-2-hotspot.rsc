@@ -2,7 +2,7 @@
 # and wired LAN (bridge1, 192.168.80.0/24) sign in.
 # Rollback: core01-2-hotspot-rollback.rsc
 #
-# Needs step 1 running (http://172.31.250.2:8080/healthz answers).
+# Needs step 1 running (http://172.31.250.2/healthz answers).
 # Both hotspot servers are created DISABLED. Enable WiFi first, test, then wired:
 #   /ip/hotspot/enable hs-erpwifi-wifi
 #   /ip/hotspot/enable hs-erpwifi-lan
@@ -34,7 +34,7 @@
 
 # Sign-in pages, downloaded from the container.
 :foreach f in={"login.html";"alogin.html";"status.html";"logout.html";"error.html";"redirect.html";"rlogin.html"} do={
-    /tool/fetch url=("http://172.31.250.2:8080/hotspot/" . $f) dst-path=("erpwifi-hotspot/" . $f)
+    /tool/fetch url=("http://172.31.250.2/hotspot/" . $f) dst-path=("erpwifi-hotspot/" . $f)
 }
 
 # Users signed in through RADIUS land in this profile. Device limits come from
@@ -72,8 +72,13 @@
 }
 :put ("Bypassed " . $bypassed . " infrastructure devices on bridge1, " . [:len $bypassMacs] . " manual")
 
-# Voucher guests are put in HS-GUEST: internet only, no SAP/file server/cameras/PBX.
+# Before signing in, people may open the visitor request page (and nothing else).
+/ip/hotspot/walled-garden/ip add dst-address=172.31.250.2 protocol=tcp dst-port=8081 action=accept comment="erpwifi visitor request page"
+
+# Voucher and pass guests are put in HS-GUEST: internet only, no SAP/file
+# server/cameras/PBX, and no dashboard login page.
 /ip/firewall/filter add chain=forward action=drop src-address-list=HS-GUEST dst-address-list=LAN place-before=0 comment="erpwifi: guests internet only"
+/ip/firewall/filter add chain=forward action=drop src-address-list=HS-GUEST dst-address=172.31.250.2 protocol=tcp dst-port=80 place-before=0 comment="erpwifi: guests no dashboard"
 
 :if ([:len $breakGlassPassword] > 0) do={
     /ip/hotspot/user add name=wifi-breakglass password=$breakGlassPassword profile=erpwifi comment="erpwifi break-glass, works without the container"

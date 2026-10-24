@@ -9,5 +9,5 @@ COPY src ./src
 RUN pip install --no-cache-dir . && rm -rf /root/.cache
 ENV ERPWIFI_CONFIG=/data/config.toml PYTHONUNBUFFERED=1
 VOLUME /data
-EXPOSE 1812/udp 1813/udp 8080/tcp
+EXPOSE 1812/udp 1813/udp 80/tcp 8081/tcp
 CMD ["erpwifi", "run"]

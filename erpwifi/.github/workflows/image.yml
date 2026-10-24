@@ -2,7 +2,7 @@ name: erpwifi image
 
 on:
   push:
-    paths: ["erpwifi/**", ".github/workflows/erpwifi-image.yml"]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -12,9 +12,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: erpwifi
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,7 +35,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: erpwifi
+          context: .
           platforms: linux/arm64,linux/amd64
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="pragma" content="no-cache">
 <meta http-equiv="expires" content="-1">
-<title>WiFi sign-in</title>
+<title>Network sign-in</title>
 <style>
   :root { --bg:#f3f5f8; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#dfe3e8; --accent:#2563eb; --danger:#c62828; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1d2128; --text:#e6e8eb; --muted:#9aa2ad; --line:#2d333c; --accent:#5b8def; --danger:#ef6461; } }
@@ -25,41 +25,74 @@
   .error { color:var(--danger); border:1px solid var(--danger); border-radius:8px; padding:9px 12px; margin-bottom:14px; }
   table { width:100%; border-collapse:collapse; margin-bottom:16px; } td { padding:6px 0; border-bottom:1px solid var(--line); } td:last-child { text-align:right; }
 </style>
+<style>
+  .choices { display:grid; gap:10px; }
+  .choice { display:block; text-align:left; padding:14px 16px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--text); font:inherit; cursor:pointer; width:100%; text-decoration:none; }
+  .choice strong { display:block; font-size:17px; }
+  .choice span { color:var(--muted); font-size:14px; }
+  .choice:hover { border-color:var(--accent); }
+  .back { background:none; border:0; color:var(--muted); font:inherit; padding:0; margin:0 0 12px; cursor:pointer; }
+  .or { text-align:center; color:var(--muted); font-size:14px; margin:14px 0 10px; }
+  .foot { text-align:center; font-size:13px; margin-top:18px; } .foot a { color:var(--muted); }
+  [hidden] { display:none !important; }
+</style>
 </head>
 <body>
-<div class="card">
-  <h1>Welcome to our WiFi</h1>
-  <p>Sign in with your ERP account, or use a guest voucher.</p>
+<div class="card" id="card" data-failed="$(if error)yes$(endif)">
   $(if error)<div class="error">$(error)</div>$(endif)
-  <div class="tabs">
-    <button type="button" id="tab-erp" class="on" onclick="show('erp')">Staff (ERP)</button>
-    <button type="button" id="tab-voucher" onclick="show('voucher')">Guest voucher</button>
+
+  <!-- Step 1: choose how to get on the network -->
+  <div id="step-choose">
+    <h1>Welcome</h1>
+    <p>Sign in to use the network.</p>
+    <div class="choices">
+      <button type="button" class="choice" onclick="show('erp')">
+        <strong>Staff: sign in with ERP</strong><span>Use your ERP email or username and password</span></button>
+      <button type="button" class="choice" onclick="show('guest')">
+        <strong>Visitor: temporary access</strong><span>Ask for access, or enter the code you were given</span></button>
+    </div>
   </div>
+
   <!-- PAP login: the hotspot profile must have login-by=http-pap (and https). -->
-  <form id="form-erp" name="login" action="$(link-login-only)" method="post">
-    <input type="hidden" name="dst" value="$(link-orig)">
-    <input type="hidden" name="popup" value="true">
-    <input name="username" value="$(username)" placeholder="ERP email or username" autocomplete="username" autocapitalize="off" required>
-    <input name="password" type="password" placeholder="ERP password" autocomplete="current-password" required>
-    <button class="btn">Sign in</button>
-  </form>
-  <form id="form-voucher" action="$(link-login-only)" method="post" hidden onsubmit="this.password.value = this.username.value">
-    <input type="hidden" name="dst" value="$(link-orig)">
-    <input type="hidden" name="popup" value="true">
-    <input type="hidden" name="password">
-    <input name="username" class="code" placeholder="VOUCHER CODE" autocomplete="off" autocapitalize="characters" required>
-    <button class="btn">Connect</button>
-  </form>
+  <div id="step-erp" hidden>
+    <button type="button" class="back" onclick="show('choose')">&larr; Back</button>
+    <h1>Staff sign-in</h1>
+    <p>Use your ERP account.</p>
+    <form name="login" action="$(link-login-only)" method="post">
+      <input type="hidden" name="dst" value="$(link-orig)">
+      <input type="hidden" name="popup" value="true">
+      <input name="username" value="$(username)" placeholder="ERP email or username" autocomplete="username" autocapitalize="off" required>
+      <input name="password" type="password" placeholder="ERP password" autocomplete="current-password" required>
+      <button class="btn">Sign in</button>
+    </form>
+  </div>
+
+  <div id="step-guest" hidden>
+    <button type="button" class="back" onclick="show('choose')">&larr; Back</button>
+    <h1>Temporary access</h1>
+    <p>Visitors need approval. Send a request, then enter the code or scan the QR code you are given.</p>
+    <a class="btn" href="__PORTAL_URL__?mac=$(mac-esc)">Request access</a>
+    <div class="or">Already have a code?</div>
+    <form action="$(link-login-only)" method="post" onsubmit="this.password.value = this.username.value">
+      <input type="hidden" name="dst" value="$(link-orig)">
+      <input type="hidden" name="popup" value="true">
+      <input type="hidden" name="password">
+      <input name="username" class="code" placeholder="GUEST CODE" autocomplete="off" autocapitalize="characters" required>
+      <button class="btn secondary">Connect</button>
+    </form>
+  </div>
+
+  <div class="foot"><a href="__ADMIN_URL__">Admin</a></div>
 </div>
 <script>
-  function show(which) {
-    ["erp", "voucher"].forEach(function (k) {
-      document.getElementById("form-" + k).hidden = k !== which;
-      document.getElementById("tab-" + k).className = k === which ? "on" : "";
+  function show(step) {
+    ["choose", "erp", "guest"].forEach(function (k) {
+      document.getElementById("step-" + k).hidden = k !== step;
     });
-    try { localStorage.setItem("wifi-tab", which); } catch (e) {}
+    try { sessionStorage.setItem("signin-step", step); } catch (e) {}
   }
-  try { if (localStorage.getItem("wifi-tab") === "voucher") show("voucher"); } catch (e) {}
+  // After a failed sign-in, reopen the form the person was using.
+  try { var s = sessionStorage.getItem("signin-step"); if (s && document.getElementById("card").getAttribute("data-failed") === "yes") show(s); } catch (e) {}
 </script>
 </body>
 </html>

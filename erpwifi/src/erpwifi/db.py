@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS vouchers (
     note TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     first_used_at REAL,
-    revoked INTEGER NOT NULL DEFAULT 0
+    revoked INTEGER NOT NULL DEFAULT 0,
+    -- 'voucher' (clock starts at first use) or 'pass' (fixed expiry)
+    kind TEXT NOT NULL DEFAULT 'voucher',
+    expires_fixed REAL,
+    issued_by TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS blocks (
     kind TEXT NOT NULL,
@@ -46,6 +50,22 @@ CREATE TABLE IF NOT EXISTS blocks (
     reason TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     PRIMARY KEY (kind, value)
+);
+CREATE TABLE IF NOT EXISTS access_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    organisation TEXT NOT NULL DEFAULT '',
+    visiting TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    mac TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_at REAL,
+    decided_by TEXT NOT NULL DEFAULT '',
+    pass_code TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS credential_cache (
     login TEXT PRIMARY KEY,
@@ -81,9 +101,14 @@ class Voucher:
     created_at: float
     first_used_at: float | None
     revoked: bool
+    kind: str = "voucher"
+    expires_fixed: float | None = None
+    issued_by: str = ""
 
     @property
     def expires_at(self) -> float | None:
+        if self.expires_fixed is not None:
+            return self.expires_fixed
         if self.first_used_at is None:
             return None
         return self.first_used_at + self.valid_minutes * 60
@@ -91,9 +116,9 @@ class Voucher:
     def status(self, now: float) -> str:
         if self.revoked:
             return "revoked"
-        if self.first_used_at is None:
-            return "unused"
-        return "expired" if now >= self.expires_at else "active"
+        if self.expires_at is not None and now >= self.expires_at:
+            return "expired"
+        return "unused" if self.first_used_at is None else "active"
 
 
 def normalize_mac(mac: str) -> str:
@@ -241,18 +266,24 @@ class Database:
     # -- vouchers -------------------------------------------------------
 
     def create_vouchers(self, count: int, *, profile: str, valid_minutes: int, max_devices: int = 1,
-                        data_mb: int = 0, note: str = "", length: int = 8) -> list[str]:
+                        data_mb: int = 0, note: str = "", length: int = 8, kind: str = "voucher",
+                        issued_by: str = "") -> list[str]:
+        """Create codes. A 'pass' expires valid_minutes after issue, used or not;
+        a 'voucher' runs for valid_minutes from its first use."""
         codes = []
         now = time.time()
+        expires_fixed = now + valid_minutes * 60 if kind == "pass" else None
         with self._tx() as c:
             while len(codes) < count:
                 code = "".join(secrets.choice(VOUCHER_ALPHABET) for _ in range(length))
                 try:
                     c.execute(
                         """INSERT INTO vouchers (code, profile, valid_minutes, max_devices,
-                                                 data_mb, note, created_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (code, profile, valid_minutes, max_devices, data_mb, note, now),
+                                                 data_mb, note, created_at, kind, expires_fixed,
+                                                 issued_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (code, profile, valid_minutes, max_devices, data_mb, note, now, kind,
+                         expires_fixed, issued_by),
                     )
                 except sqlite3.IntegrityError:
                     continue
@@ -268,10 +299,14 @@ class Database:
             return None
         return Voucher(**{**dict(row), "revoked": bool(row["revoked"])})
 
-    def list_vouchers(self, limit: int = 500) -> list[Voucher]:
+    def list_vouchers(self, limit: int = 500, kind: str | None = None) -> list[Voucher]:
+        sql, args = "SELECT * FROM vouchers", []
+        if kind is not None:
+            sql += " WHERE kind = ?"
+            args.append(kind)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM vouchers ORDER BY created_at DESC LIMIT ?", (limit,)
+                sql + " ORDER BY created_at DESC LIMIT ?", (*args, limit)
             ).fetchall()
         return [Voucher(**{**dict(r), "revoked": bool(r["revoked"])}) for r in rows]
 
@@ -311,6 +346,58 @@ class Database:
     def list_blocks(self) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute("SELECT * FROM blocks ORDER BY created_at DESC").fetchall()
+
+    # -- visitor access requests ---------------------------------------
+
+    def expire_requests(self, older_than: float):
+        with self._tx() as c:
+            c.execute("UPDATE access_requests SET status = 'expired' "
+                      "WHERE status = 'pending' AND created_at < ?", (older_than,))
+
+    def create_request(self, *, name, organisation="", visiting="", reason="", phone="",
+                       ip="", mac="") -> str:
+        token = secrets.token_urlsafe(16)
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO access_requests (token, name, organisation, visiting, reason,
+                                                phone, ip, mac, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (token, name, organisation, visiting, reason, phone, ip,
+                 normalize_mac(mac), time.time()),
+            )
+        return token
+
+    def count_requests(self, status: str = "pending", ip: str | None = None,
+                       since: float = 0) -> int:
+        sql = "SELECT COUNT(*) FROM access_requests WHERE status = ? AND created_at >= ?"
+        args: list = [status, since]
+        if ip is not None:
+            sql += " AND ip = ?"
+            args.append(ip)
+        with self._lock:
+            return self._conn.execute(sql, args).fetchone()[0]
+
+    def get_request(self, *, token: str | None = None, pk: int | None = None):
+        col, val = ("token", token) if token is not None else ("id", pk)
+        with self._lock:
+            return self._conn.execute(
+                f"SELECT * FROM access_requests WHERE {col} = ?", (val,)).fetchone()
+
+    def list_requests(self, statuses: tuple[str, ...], limit: int = 100) -> list[sqlite3.Row]:
+        marks = ",".join("?" * len(statuses))
+        with self._lock:
+            return self._conn.execute(
+                f"SELECT * FROM access_requests WHERE status IN ({marks}) "
+                "ORDER BY created_at DESC LIMIT ?", (*statuses, limit)).fetchall()
+
+    def decide_request(self, pk: int, status: str, by: str, pass_code: str = "") -> bool:
+        """Approve or decline a pending request; False if it was no longer pending."""
+        with self._tx() as c:
+            cur = c.execute(
+                "UPDATE access_requests SET status = ?, decided_at = ?, decided_by = ?, "
+                "pass_code = ? WHERE id = ? AND status = 'pending'",
+                (status, time.time(), by, pass_code, pk))
+            return cur.rowcount == 1
 
     # -- offline sign-in cache -----------------------------------------
 

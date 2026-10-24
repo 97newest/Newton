@@ -85,6 +85,32 @@ class VoucherConfig:
 
 
 @dataclass
+class PassConfig:
+    """Temporary passes: a code (and QR code) valid for a few hours from issue."""
+    profile: str = "guest"
+    hours: list[int] = field(default_factory=lambda: [3, 4])
+    max_devices: int = 1
+    code_length: int = 6
+    # Sign-in address of the hotspot, used in the sign-in QR code.
+    login_url: str = "http://wifi.trident.local/login"
+    # Optional join-the-WiFi QR code. Leave ssid empty to skip it.
+    wifi_ssid: str = ""
+    wifi_password: str = ""
+    # Visitors can ask for a pass from the sign-in page; an admin or issuer
+    # approves it and hands over the code. Unanswered requests lapse.
+    requests_enabled: bool = True
+    request_expire_minutes: int = 30
+    max_pending_requests: int = 50
+
+
+@dataclass
+class Issuer:
+    """Dashboard login that may only issue and revoke temporary passes."""
+    username: str
+    password_hash: str
+
+
+@dataclass
 class DashboardConfig:
     listen: str = "0.0.0.0"
     port: int = 8080
@@ -94,6 +120,17 @@ class DashboardConfig:
     # Networks allowed to open the dashboard, e.g. ["192.168.6.0/24"]. Empty
     # allows any address that can reach the port.
     allowed_networks: list[str] = field(default_factory=list)
+    issuers: list[Issuer] = field(default_factory=list)
+    # ERPNext users holding one of these roles can sign in to the dashboard
+    # with their ERP account (admin: everything; issuer: passes and requests).
+    erp_admin_roles: list[str] = field(default_factory=list)
+    erp_issuer_roles: list[str] = field(default_factory=list)
+    # Address people use for the dashboard, shown as the portal's Admin link.
+    public_url: str = ""
+    # Visitor request page: a separate listener that hotspot users may reach
+    # before signing in (router walled garden), so the dashboard port stays closed.
+    portal_port: int = 8081
+    portal_url: str = ""
 
 
 @dataclass
@@ -104,6 +141,7 @@ class Config:
     rules: list[Rule]
     default_profile: str
     vouchers: VoucherConfig
+    passes: PassConfig
     dashboard: DashboardConfig
     database: str
     # IANA zone used for "today" in daily allowances, e.g. "Africa/Nairobi".
@@ -151,7 +189,17 @@ def parse_config(data: dict) -> Config:
     policy = data.get("policy", {})
     default_profile = policy.get("default_profile", "default")
     vouchers = _build(VoucherConfig, data.get("vouchers", {}), "vouchers")
-    dashboard = _build(DashboardConfig, data.get("dashboard", {}), "dashboard")
+    passes = _build(PassConfig, data.get("passes", {}), "passes")
+    if not passes.hours or any(h < 1 or h > 24 for h in passes.hours):
+        raise ConfigError("[passes] hours must be a list of 1-24, e.g. [3, 4]")
+    dashboard_data = dict(data.get("dashboard", {}))
+    issuers = [_build(Issuer, i, "dashboard.issuers") for i in dashboard_data.pop("issuers", [])]
+    dashboard = _build(DashboardConfig, dashboard_data, "dashboard")
+    dashboard.issuers = issuers
+    if (dashboard.erp_admin_roles or dashboard.erp_issuer_roles) and not erpnext.has_api_token:
+        raise ConfigError("dashboard ERP roles need erpnext.api_key and api_secret")
+    if any(i.username == dashboard.admin_username for i in issuers):
+        raise ConfigError("[[dashboard.issuers]] username must differ from admin_username")
     for net in dashboard.allowed_networks:
         try:
             ipaddress.ip_network(net, strict=False)
@@ -160,6 +208,7 @@ def parse_config(data: dict) -> Config:
 
     for ref, where in [(default_profile, "policy.default_profile"),
                        (vouchers.default_profile, "vouchers.default_profile"),
+                       (passes.profile, "passes.profile"),
                        *[(r.profile, "rules") for r in rules]]:
         if ref not in profiles:
             raise ConfigError(f"{where} refers to unknown profile '{ref}'")
@@ -178,6 +227,7 @@ def parse_config(data: dict) -> Config:
         rules=rules,
         default_profile=default_profile,
         vouchers=vouchers,
+        passes=passes,
         dashboard=dashboard,
         database=data.get("database", {}).get("path", "erpwifi.db"),
         timezone=data.get("site", {}).get("timezone", ""),

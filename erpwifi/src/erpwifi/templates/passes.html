@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Temporary passes</h1>
+<div class="card">
+  <p class="muted" style="margin-top:0">A pass is a short code (and QR code) for someone without an ERP account.
+    It stops working {{ cfg.hours|join(' or ') }} hours after you issue it, whether or not it was used.
+    {{ cfg.max_devices }} device{{ 's' if cfg.max_devices > 1 }} per pass, internet only.</p>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Valid for
+      <select name="hours">{% for h in cfg.hours %}<option value="{{ h }}">{{ h }} hours</option>{% endfor %}</select></label>
+    <label>Visitor name / reason<input name="note" placeholder="e.g. Jane, plumbing supplier" style="min-width:240px"></label>
+    <label>How many<input name="count" type="number" min="1" max="20" value="1" style="width:70px"></label>
+    <button class="primary">Issue pass</button>
+  </form>
+</div>
+
+<h2>Passes still valid</h2>
+<div class="card">
+{% if recent %}
+<table>
+  <tr><th>Code</th><th>Visitor</th><th>Status</th><th>Expires</th><th>Issued by</th><th></th></tr>
+  {% for v in recent %}{% set st = v.status(now) %}
+  <tr><td><code>{{ v.code }}</code></td><td>{{ v.note }}</td><td><span class="tag {{ st }}">{{ 'in use' if st == 'active' else 'not used yet' }}</span></td>
+    <td>{{ v.expires_at|time }} <span class="muted">({{ (v.expires_at - now)|duration }} left)</span></td><td>{{ v.issued_by }}</td>
+    <td><a class="btn" href="{{ url_for('show_passes', codes=v.code) }}">Show QR</a>
+      <form class="inline" method="post" action="{{ url_for('revoke_pass', code=v.code) }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Revoke</button></form></td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No valid passes.</p>{% endif %}
+</div>
+{% endblock %}

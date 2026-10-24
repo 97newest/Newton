@@ -8,13 +8,17 @@ import secrets
 import time
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlencode
 
-from flask import (Flask, abort, flash, redirect, render_template, request, send_from_directory,
-                   session, url_for)
+import segno
+from markupsafe import Markup
+
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
 from .config import Config
 from .db import Database, start_of_day
+from .erpnext import ERPNextUnavailable
 from .radius import disconnect, load_dictionary
 
 HOTSPOT_DIR = Path(__file__).parent / "hotspot"
@@ -40,7 +44,16 @@ def _fmt_time(ts) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "—"
 
 
-def create_app(config: Config, db: Database, disconnector=None) -> Flask:
+def _qr_svg(data: str) -> Markup:
+    return Markup(segno.make(data, error="m").svg_inline(scale=5, border=2, dark="#000",
+                                                         light="#fff"))
+
+
+def _wifi_escape(value: str) -> str:
+    return "".join("\\" + c if c in '\\;,:"' else c for c in value)
+
+
+def create_app(config: Config, db: Database, disconnector=None, erp=None) -> Flask:
     app = Flask(__name__)
     app.secret_key = config.dashboard.secret_key or secrets.token_hex(32)
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict")
@@ -58,7 +71,11 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
     def inject():
         if "csrf" not in session:
             session["csrf"] = secrets.token_urlsafe(24)
-        return {"csrf": session["csrf"], "now": time.time()}
+        pending = 0
+        if session.get("role") and config.passes.requests_enabled:
+            db.expire_requests(time.time() - config.passes.request_expire_minutes * 60)
+            pending = db.count_requests("pending")
+        return {"csrf": session["csrf"], "now": time.time(), "pending_requests": pending}
 
     allowed = [ipaddress.ip_network(n, strict=False) for n in config.dashboard.allowed_networks]
 
@@ -80,13 +97,54 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
             if not hmac.compare_digest(token, session.get("csrf", "")):
                 abort(400, "Invalid form token, reload the page")
 
-    def login_required(view):
-        @wraps(view)
-        def wrapper(*args, **kwargs):
-            if not session.get("admin"):
-                return redirect(url_for("login", next=request.path))
-            return view(*args, **kwargs)
-        return wrapper
+    def require(*roles):
+        def decorator(view):
+            @wraps(view)
+            def wrapper(*args, **kwargs):
+                role = session.get("role")
+                if role is None:
+                    return redirect(url_for("login", next=request.path))
+                if role not in roles:
+                    abort(403)
+                return view(*args, **kwargs)
+            return wrapper
+        return decorator
+
+    login_required = require("admin")
+    pass_issuer = require("admin", "issuer")
+
+    def check_login(username: str, password: str) -> tuple[str, str] | None:
+        """(role, display name) for a local account or an ERP user with a dashboard role."""
+        role = check_local_login(username, password)
+        if role:
+            return role, username
+        dash = config.dashboard
+        if erp is None or not (dash.erp_admin_roles or dash.erp_issuer_roles):
+            return None
+        try:
+            user = erp.authenticate(username, password)
+        except ERPNextUnavailable:
+            flash("ERPNext is unreachable; use the local admin account", "error")
+            return None
+        if user is None or not user.enabled:
+            return None
+        if set(dash.erp_admin_roles) & set(user.roles):
+            return "admin", user.user_id
+        if set(dash.erp_issuer_roles) & set(user.roles):
+            return "issuer", user.user_id
+        return None
+
+    def check_local_login(username: str, password: str) -> str | None:
+        """Role of the matching local dashboard account, or None."""
+        accounts = [("admin", config.dashboard.admin_username, config.dashboard.admin_password_hash)]
+        accounts += [("issuer", i.username, i.password_hash) for i in config.dashboard.issuers]
+        role = None
+        for acct_role, acct_user, acct_hash in accounts:
+            # check every account so timing doesn't reveal which usernames exist
+            if (hmac.compare_digest(username, acct_user) and acct_hash
+                    and check_password_hash(acct_hash, password)):
+                role = acct_role
+        return role
 
     @app.get("/healthz")
     def healthz():
@@ -97,21 +155,24 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
     def hotspot_file(name):
         if name not in HOTSPOT_FILES:
             abort(404)
-        return send_from_directory(HOTSPOT_DIR, name, mimetype="text/html")
+        page = (HOTSPOT_DIR / name).read_text()
+        page = (page.replace("__PORTAL_URL__", config.dashboard.portal_url)
+                    .replace("__ADMIN_URL__", config.dashboard.public_url))
+        return page, 200, {"Content-Type": "text/html; charset=utf-8"}
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
-            user_ok = hmac.compare_digest(request.form.get("username", ""),
-                                          config.dashboard.admin_username)
-            pw_hash = config.dashboard.admin_password_hash
-            pw_ok = bool(pw_hash) and check_password_hash(pw_hash, request.form.get("password", ""))
-            if user_ok and pw_ok:
+            username = request.form.get("username", "")
+            found = check_login(username, request.form.get("password", ""))
+            if found:
+                role, display = found
                 session.clear()
-                session["admin"] = True
+                session["role"] = role
+                session["user"] = display
+                home = url_for("online") if role == "admin" else url_for("passes")
                 nxt = request.args.get("next", "")
-                return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//")
-                                else url_for("online"))
+                return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else home)
             time.sleep(1)
             flash("Wrong username or password", "error")
         return render_template("login.html")
@@ -189,7 +250,7 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
                                        length=config.vouchers.code_length)
             flash(f"Created {len(codes)} voucher(s)", "ok")
             return redirect(url_for("print_vouchers", codes=",".join(codes)))
-        return render_template("vouchers.html", vouchers=db.list_vouchers(),
+        return render_template("vouchers.html", vouchers=db.list_vouchers(kind="voucher"),
                                profiles=sorted(config.profiles), defaults=config.vouchers)
 
     @app.get("/vouchers/print")
@@ -207,6 +268,95 @@ def create_app(config: Config, db: Database, disconnector=None) -> Flask:
             kick(row)
         flash(f"Revoked {code}", "ok")
         return redirect(url_for("vouchers"))
+
+    @app.route("/passes", methods=["GET", "POST"])
+    @pass_issuer
+    def passes():
+        cfg = config.passes
+        if request.method == "POST":
+            try:
+                hours = int(request.form.get("hours", cfg.hours[0]))
+                count = max(1, min(int(request.form.get("count", 1)), 20))
+            except ValueError:
+                abort(400)
+            if hours not in cfg.hours:
+                abort(400)
+            codes = db.create_vouchers(
+                count, profile=cfg.profile, valid_minutes=hours * 60,
+                max_devices=cfg.max_devices, note=request.form.get("note", "")[:200],
+                length=cfg.code_length, kind="pass", issued_by=session.get("user", ""))
+            return redirect(url_for("show_passes", codes=",".join(codes)))
+        recent = [v for v in db.list_vouchers(200, kind="pass")
+                  if v.status(time.time()) in ("unused", "active")]
+        return render_template("passes.html", cfg=cfg, recent=recent)
+
+    @app.get("/passes/show")
+    @pass_issuer
+    def show_passes():
+        cfg = config.passes
+        codes = [c for c in request.args.get("codes", "").split(",") if c]
+        found = [v for v in (db.get_voucher(c) for c in codes) if v and v.kind == "pass"]
+        wifi_qr = None
+        if cfg.wifi_ssid:
+            security = "WPA" if cfg.wifi_password else "nopass"
+            wifi_qr = _qr_svg(f"WIFI:T:{security};S:{_wifi_escape(cfg.wifi_ssid)};"
+                              f"P:{_wifi_escape(cfg.wifi_password)};;")
+        tickets = [{
+            "pass": v,
+            "qr": _qr_svg(cfg.login_url + "?" + urlencode({"username": v.code, "password": v.code})),
+        } for v in found]
+        return render_template("pass_show.html", cfg=cfg, tickets=tickets, wifi_qr=wifi_qr)
+
+    @app.get("/requests")
+    @pass_issuer
+    def requests_page():
+        return render_template(
+            "requests.html", cfg=config.passes,
+            pending=db.list_requests(("pending",)),
+            decided=db.list_requests(("approved", "declined", "expired"), limit=30))
+
+    @app.post("/requests/<int:pk>/approve")
+    @pass_issuer
+    def approve_request(pk):
+        cfg = config.passes
+        req = db.get_request(pk=pk)
+        try:
+            hours = int(request.form.get("hours", cfg.hours[0]))
+        except ValueError:
+            abort(400)
+        if req is None or hours not in cfg.hours:
+            abort(400)
+        note = req["name"] + (f" ({req['organisation']})" if req["organisation"] else "")
+        note += f", visiting {req['visiting']}" if req["visiting"] else ""
+        [code] = db.create_vouchers(1, profile=cfg.profile, valid_minutes=hours * 60,
+                                    max_devices=cfg.max_devices, note=note[:200],
+                                    length=cfg.code_length, kind="pass",
+                                    issued_by=session.get("user", ""))
+        if not db.decide_request(pk, "approved", session.get("user", ""), pass_code=code):
+            db.revoke_voucher(code)
+            flash("Someone else already answered that request", "error")
+            return redirect(url_for("requests_page"))
+        flash(f"Approved {req['name']}: give them this code or let them scan the QR", "ok")
+        return redirect(url_for("show_passes", codes=code))
+
+    @app.post("/requests/<int:pk>/decline")
+    @pass_issuer
+    def decline_request(pk):
+        if db.decide_request(pk, "declined", session.get("user", "")):
+            flash("Request declined", "ok")
+        return redirect(url_for("requests_page"))
+
+    @app.post("/passes/<code>/revoke")
+    @pass_issuer
+    def revoke_pass(code):
+        v = db.get_voucher(code)
+        if v is None or v.kind != "pass":
+            abort(404)
+        db.revoke_voucher(v.code)
+        for row in db.active_sessions(v.code):
+            kick(row)
+        flash(f"Revoked pass {v.code}", "ok")
+        return redirect(url_for("passes"))
 
     @app.get("/log")
     @login_required

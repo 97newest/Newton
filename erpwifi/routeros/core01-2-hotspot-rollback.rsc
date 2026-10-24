@@ -4,7 +4,8 @@
 /ip/hotspot/profile/remove [find where name~"^hsprof-erpwifi"]
 /ip/hotspot/user/remove [find where comment~"^erpwifi"]
 /ip/hotspot/user/profile/remove [find where name=erpwifi]
-/ip/firewall/filter/remove [find where comment="erpwifi: guests internet only"]
+/ip/hotspot/walled-garden/ip/remove [find where comment~"^erpwifi"]
+/ip/firewall/filter/remove [find where comment~"^erpwifi: guests"]
 /ip/firewall/address-list/remove [find where list=HS-GUEST]
 /radius/remove [find where comment="erpwifi"]
 /radius/incoming set accept=no

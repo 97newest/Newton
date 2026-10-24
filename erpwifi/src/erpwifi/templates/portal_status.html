@@ -1,0 +1,21 @@
+{% extends "portal_base.html" %}
+{% block head %}{% if req.status == 'pending' %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
+{% block body %}
+{% if req.status == 'pending' %}
+  <h1>Waiting for approval</h1>
+  <p>Hi {{ req.name }}, your request has been sent. Keep this page open; it updates by itself.</p>
+  <p>If nobody responds within {{ cfg.request_expire_minutes }} minutes, please ask at reception.</p>
+{% elif req.status == 'approved' %}
+  <h1>Approved</h1>
+  <div class="ok">{{ req.decided_by or 'Reception' }} approved your access.</div>
+  <p>Ask them for your code, or scan the QR code they show you. Then open the sign-in page and enter the code under <strong>Guest code</strong>.</p>
+  <a class="btn" href="{{ sign_in_url }}">Go to sign-in</a>
+{% elif req.status == 'declined' %}
+  <h1>Request declined</h1>
+  <p>Your request was not approved. Please ask at reception.</p>
+{% else %}
+  <h1>Request expired</h1>
+  <p>Nobody answered in time.</p>
+  <a class="btn" href="{{ url_for('request_form') }}">Ask again</a>
+{% endif %}
+{% endblock %}

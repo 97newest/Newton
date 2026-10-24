@@ -79,16 +79,45 @@ default_profile = "guest"
 default_minutes = 1440
 code_length = 8
 
+# Temporary passes: a code + QR code that stops working a fixed number of
+# hours after it is issued. Visitors ask for one on the sign-in page; an admin
+# or issuer approves it in the dashboard and hands the code over.
+[passes]
+profile = "guest"
+hours = [3, 4]
+max_devices = 1
+code_length = 6
+login_url = "http://wifi.trident.local/login"   # hotspot dns-name
+# Optional "join the WiFi" QR code on printed passes (the .81 SSID).
+wifi_ssid = ""
+wifi_password = ""
+requests_enabled = true
+request_expire_minutes = 30
+max_pending_requests = 50
+
 [dashboard]
 listen = "0.0.0.0"
-port = 8080
+port = 80                        # http://wifi-admin.trident.local
+public_url = "http://wifi-admin.trident.local"
+# Visitor request page, reachable before sign-in through the walled garden.
+portal_port = 8081
+portal_url = "http://172.31.250.2:8081/request"
+# ERP users with these roles sign in to the dashboard with their ERP account.
+erp_admin_roles = ["System Manager"]
+erp_issuer_roles = ["Receptionist"]
+# Local accounts work even when ERPNext is down.
 admin_username = "admin"
 # Generate with: docker run --rm -it ghcr.io/97newest/erpwifi erpwifi hash-password
 admin_password_hash = ""
 secret_key = "CHANGE-to-a-long-random-string"
 # Who may open the dashboard (the router firewall also limits this to the
 # WIFI-ADMINS address list).
-allowed_networks = ["192.168.6.0/24", "192.168.80.0/24"]
+allowed_networks = ["192.168.6.0/24", "192.168.80.0/24", "192.168.81.0/24"]
+
+# Reception desk logins that may only handle requests and passes.
+# [[dashboard.issuers]]
+# username = "reception"
+# password_hash = ""   # erpwifi hash-password
 
 [database]
 path = "/data/erpwifi.db"

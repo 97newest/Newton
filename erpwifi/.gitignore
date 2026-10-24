@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+erpwifi-*.tar
+.sandbox-ca.crt
